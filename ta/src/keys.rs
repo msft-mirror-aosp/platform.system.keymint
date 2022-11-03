@@ -1,9 +1,9 @@
 //! TA functionality related to key generation/import/upgrade.
 
-use crate::{cert, device};
+use crate::{cert, device, AttestationChainInfo};
+use alloc::collections::btree_map::Entry;
 use alloc::vec::Vec;
-use core::cmp::Ordering;
-use core::{borrow::Borrow, convert::TryFrom};
+use core::{borrow::Borrow, cmp::Ordering, convert::TryFrom};
 use der::{Decode, Sequence};
 use kmr_common::{
     crypto::{self, aes, rsa, KeyMaterial, OpaqueOr},
@@ -88,42 +88,29 @@ impl<'a> crate::KeyMintTa<'a> {
     /// Retrieve the signing information.
     pub(crate) fn get_signing_info(
         &self,
-        key_type: device::SigningKey,
+        key_type: device::SigningKeyType,
     ) -> Result<SigningInfo<'a>, Error> {
-        let (chain, issuer) = match key_type {
-            device::SigningKey::Batch => (&self.batch_chain, &self.batch_issuer),
-            device::SigningKey::DeviceUnique => {
-                (&self.device_unique_chain, &self.device_unique_issuer)
+        // Retrieve the chain and issuer information, which is cached after first retrieval.
+        let mut attestation_chain_info = self.attestation_chain_info.borrow_mut();
+        let chain_info = match attestation_chain_info.entry(key_type) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => {
+                // Retrieve and store the cert chain information (as this is public).
+                let chain = self.dev.sign_info.cert_chain(key_type)?;
+                let issuer = cert::extract_subject(
+                    chain.get(0).ok_or_else(|| km_err!(UnknownError, "empty attestation chain"))?,
+                )?;
+                e.insert(AttestationChainInfo { chain, issuer })
             }
         };
-        if chain.borrow().is_none() {
-            // Retrieve and store the cert chain information (as this is public).
-            let dev_chain = self.dev.sign_info.cert_chain(key_type)?;
-            let issuer_data = cert::extract_subject(
-                dev_chain.get(0).ok_or_else(|| km_err!(UnknownError, "empty attestation chain"))?,
-            )?;
-            *chain.borrow_mut() = Some(dev_chain);
-            *issuer.borrow_mut() = Some(issuer_data);
-        }
+
         // Retrieve the signing key information (which will be dropped when signing is done).
         let signing_key = self.dev.sign_info.signing_key(key_type)?;
         Ok(SigningInfo {
             attestation_info: None,
             signing_key,
-            issuer_subject: issuer
-                .borrow()
-                .as_ref()
-                .ok_or_else(|| {
-                    km_err!(AttestationKeysNotProvisioned, "no attestation chain available")
-                })?
-                .clone(),
-            chain: chain
-                .borrow()
-                .as_ref()
-                .ok_or_else(|| {
-                    km_err!(AttestationKeysNotProvisioned, "no attestation chain available")
-                })?
-                .clone(),
+            issuer_subject: chain_info.issuer.clone(),
+            chain: chain_info.chain.clone(),
         })
     }
 
@@ -355,13 +342,10 @@ impl<'a> crate::KeyMintTa<'a> {
 
                 if let Some(attest_keyinfo) = attestation_key.as_ref() {
                     // User-specified attestation key provided.
-                    let encrypted_attest_keyblob =
-                        keyblob::EncryptedKeyBlob::new(&attest_keyinfo.key_blob)?;
-                    let attest_hidden =
-                        tag::hidden(&attest_keyinfo.attest_key_params, self.root_of_trust()?)?;
-
-                    attest_keyblob =
-                        self.keyblob_decrypt(encrypted_attest_keyblob, attest_hidden)?;
+                    (attest_keyblob, _) = self.keyblob_parse_decrypt(
+                        &attest_keyinfo.key_blob,
+                        &attest_keyinfo.attest_key_params,
+                    )?;
                     attest_keyblob
                         .suitable_for(KeyPurpose::AttestKey, self.hw_info.security_level)?;
                     if attest_keyinfo.issuer_subject_name.is_empty() {
@@ -376,7 +360,7 @@ impl<'a> crate::KeyMintTa<'a> {
                 } else {
                     // Need to use a device key for attestation. Look up the relevant device key and
                     // chain.
-                    let key_type = match (
+                    let which_key = match (
                         get_bool_tag_value!(params, DeviceUniqueAttestation)?,
                         self.is_strongbox(),
                     ) {
@@ -389,8 +373,16 @@ impl<'a> crate::KeyMintTa<'a> {
                             ))
                         }
                     };
+                    // Provide an indication of what's going to be signed, to allow the
+                    // implementation to switch between EC and RSA signing keys if it so chooses.
+                    let algo_hint = match &keyblob.key_material {
+                        crypto::KeyMaterial::Rsa(_) => device::SigningAlgorithm::Rsa,
+                        crypto::KeyMaterial::Ec(_, _, _) => device::SigningAlgorithm::Ec,
+                        _ => return Err(km_err!(InvalidArgument, "unexpected key type!")),
+                    };
 
-                    let mut info = self.get_signing_info(key_type)?;
+                    let mut info = self
+                        .get_signing_info(device::SigningKeyType { which: which_key, algo_hint })?;
                     info.attestation_info = attestation_info;
                     Some(info)
                 }
@@ -436,8 +428,8 @@ impl<'a> crate::KeyMintTa<'a> {
         }
 
         // Now build the keyblob.
-        let kek_context = self.dev.keys.kek_context();
-        let root_kek = self.root_kek(&kek_context);
+        let kek_context = self.dev.keys.kek_context()?;
+        let root_kek = self.root_kek(&kek_context)?;
         let hidden = tag::hidden(params, self.root_of_trust()?)?;
         let encrypted_keyblob = keyblob::encrypt(
             self.hw_info.security_level,
@@ -472,9 +464,7 @@ impl<'a> crate::KeyMintTa<'a> {
         biometric_sid: i64,
     ) -> Result<KeyCreationResult, Error> {
         // Decrypt the wrapping key blob
-        let encrypted_wrapping_key_blob = keyblob::EncryptedKeyBlob::new(wrapping_key_blob)?;
-        let hidden_params = tag::hidden(unwrapping_params, self.root_of_trust()?)?;
-        let wrapping_key = self.keyblob_decrypt(encrypted_wrapping_key_blob, hidden_params)?;
+        let (wrapping_key, _) = self.keyblob_parse_decrypt(wrapping_key_blob, unwrapping_params)?;
         let keyblob::PlaintextKeyBlob { characteristics, key_material } = wrapping_key;
 
         // Decode the ASN.1 DER encoded `SecureKeyWrapper`.
@@ -627,11 +617,8 @@ impl<'a> crate::KeyMintTa<'a> {
         upgrade_params: Vec<KeyParam>,
     ) -> Result<Vec<u8>, Error> {
         // TODO: cope with previous versions/encodings of keys
-        let encrypted_keyblob = keyblob::EncryptedKeyBlob::new(keyblob_to_upgrade)?;
-        let sdd_slot = encrypted_keyblob.secure_deletion_slot();
-
-        let hidden = tag::hidden(&upgrade_params, self.root_of_trust()?)?;
-        let mut keyblob = self.keyblob_decrypt(encrypted_keyblob, hidden.clone())?;
+        let (mut keyblob, sdd_slot) =
+            self.keyblob_parse_decrypt(keyblob_to_upgrade, &upgrade_params)?;
 
         fn upgrade(v: &mut u32, curr: u32, name: &str) -> Result<bool, Error> {
             match (*v).cmp(&curr) {
@@ -728,8 +715,9 @@ impl<'a> crate::KeyMintTa<'a> {
         }
 
         // Now re-build the keyblob. Use a potentially fresh key encryption key.
-        let kek_context = self.dev.keys.kek_context();
-        let root_kek = self.root_kek(&kek_context);
+        let kek_context = self.dev.keys.kek_context()?;
+        let root_kek = self.root_kek(&kek_context)?;
+        let hidden = tag::hidden(&upgrade_params, self.root_of_trust()?)?;
         let encrypted_keyblob = keyblob::encrypt(
             self.hw_info.security_level,
             match &mut self.dev.sdd_mgr {

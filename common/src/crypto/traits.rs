@@ -532,47 +532,27 @@ pub trait Ckdf {
 }
 
 ////////////////////////////////////////////////////////////
-// No-op implementations of traits for testing.
-// TODO: remove these
-
-/// Return the type name for a type.  Only suitable for debug output.
-fn type_name_of<T>(_: T) -> &'static str {
-    core::any::type_name::<T>()
-}
-
-/// Macro to emit the name of the current function.
-macro_rules! function {
-    () => {{
-        // Add an inner function `f` to the current block.
-        fn f() {}
-        // Retrieve the type name of the added inner function,
-        // something like `kmr::SomeType::a_method::f`.
-        let name = type_name_of(f);
-        // Lop off the trailing `::f`.
-        &name[..name.len() - 3]
-    }};
-}
+// No-op implementations of traits. These implementations are
+// only intended for convenience during the process of porting
+// the KeyMint code to a new environment.
 
 /// Macro to emit an error log indicating that an unimplemented function
 /// has been invoked (and where it is).
+#[macro_export]
 macro_rules! log_unimpl {
     () => {
-        error!(
-            "{}:{}: Unimplemented placeholder KeyMint trait method {} invoked!",
-            file!(),
-            line!(),
-            function!()
-        );
+        error!("{}:{}: Unimplemented placeholder KeyMint trait method invoked!", file!(), line!(),);
     };
 }
 
 /// Mark a method as unimplemented (log error, return `ErrorCode::Unimplemented`)
+#[macro_export]
 macro_rules! unimpl {
     () => {
         log_unimpl!();
         return Err(Error::Hal(
             kmr_wire::keymint::ErrorCode::Unimplemented,
-            alloc::format!("{}:{}: method {} unimplemented", file!(), line!(), function!()),
+            alloc::format!("{}:{}: method unimplemented", file!(), line!()),
         ));
     };
 }
@@ -663,14 +643,6 @@ impl Rsa for NoOpRsa {
         _pub_exponent: RsaExponent,
         _params: &[keymint::KeyParam],
     ) -> Result<KeyMaterial, Error> {
-        unimpl!();
-    }
-
-    fn import_pkcs8_key(
-        &self,
-        _data: &[u8],
-        _params: &[keymint::KeyParam],
-    ) -> Result<(KeyMaterial, KeySizeInBits, RsaExponent), Error> {
         unimpl!();
     }
 

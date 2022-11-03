@@ -4,6 +4,7 @@
 extern crate alloc;
 
 use alloc::{
+    collections::BTreeMap,
     format,
     rc::Rc,
     string::{String, ToString},
@@ -14,7 +15,7 @@ use core::mem::size_of;
 use core::{cell::RefCell, convert::TryFrom};
 use kmr_common::{
     crypto::{self, RawKeyMaterial},
-    keyblob::{self, RootOfTrustInfo},
+    keyblob::{self, RootOfTrustInfo, SecureDeletionSlot},
     km_err, tag, vec_try, vec_try_with_capacity, Error, FallibleAllocExt,
 };
 use kmr_derive::AsCborValue;
@@ -59,6 +60,15 @@ struct UseCount {
     count: u64,
 }
 
+/// Attestation chain information.
+struct AttestationChainInfo {
+    /// Chain of certificates from intermediate to root.
+    chain: Vec<keymint::Certificate>,
+    /// Subject field from the first certificate in the chain, as an ASN.1 DER encoded `Name` (cf
+    /// RFC 5280 s4.1.2.4).
+    issuer: Vec<u8>,
+}
+
 /// KeyMint device implementation, running in secure environment.
 pub struct KeyMintTa<'a> {
     /**
@@ -90,13 +100,7 @@ pub struct KeyMintTa<'a> {
     hal_info: Option<HalInfo>,
 
     /// Attestation chain information, retrieved on first use.
-    batch_chain: RefCell<Option<Vec<keymint::Certificate>>>,
-    device_unique_chain: RefCell<Option<Vec<keymint::Certificate>>>,
-
-    /// Subject field from the first certificate in the chain, as an ASN.1 DER encoded `Name` (cf
-    /// RFC 5280 s4.1.2.4); retrieved on first use.
-    batch_issuer: RefCell<Option<Vec<u8>>>,
-    device_unique_issuer: RefCell<Option<Vec<u8>>>,
+    attestation_chain_info: RefCell<BTreeMap<device::SigningKeyType, AttestationChainInfo>>,
 
     /// Attestation ID information, fixed forever for a device, but retrieved on first use.
     attestation_id_info: RefCell<Option<Rc<AttestationIdInfo>>>,
@@ -225,10 +229,7 @@ impl<'a> KeyMintTa<'a> {
             boot_info: None,
             rot_data: None,
             hal_info: None,
-            batch_chain: RefCell::new(None),
-            device_unique_chain: RefCell::new(None),
-            batch_issuer: RefCell::new(None),
-            device_unique_issuer: RefCell::new(None),
+            attestation_chain_info: RefCell::new(BTreeMap::new()),
             attestation_id_info: RefCell::new(None),
         }
     }
@@ -247,13 +248,27 @@ impl<'a> KeyMintTa<'a> {
         }
     }
 
+    /// Parse and decrypt an encrypted key blob.
+    fn keyblob_parse_decrypt(
+        &self,
+        key_blob: &[u8],
+        params: &[KeyParam],
+    ) -> Result<(keyblob::PlaintextKeyBlob, Option<SecureDeletionSlot>), Error> {
+        // TODO: cope with previous versions/encodings of keys
+        let encrypted_keyblob = keyblob::EncryptedKeyBlob::new(key_blob)?;
+        let hidden = tag::hidden(params, self.root_of_trust()?)?;
+        let sdd_slot = encrypted_keyblob.secure_deletion_slot();
+        let keyblob = self.keyblob_decrypt(encrypted_keyblob, hidden)?;
+        Ok((keyblob, sdd_slot))
+    }
+
     /// Decrypt an encrypted key blob.
     fn keyblob_decrypt(
         &self,
         encrypted_keyblob: keyblob::EncryptedKeyBlob,
         hidden: Vec<KeyParam>,
     ) -> Result<keyblob::PlaintextKeyBlob, Error> {
-        let root_kek = self.root_kek(encrypted_keyblob.kek_context());
+        let root_kek = self.root_kek(encrypted_keyblob.kek_context())?;
         let keyblob = keyblob::decrypt(
             match &self.dev.sdd_mgr {
                 None => None,
@@ -989,9 +1004,7 @@ impl<'a> KeyMintTa<'a> {
         if let Some(sk_wrapper) = self.dev.sk_wrapper {
             // Parse and decrypt the keyblob. Note that there is no way to provide extra hidden
             // params on the API.
-            let encrypted_keyblob = keyblob::EncryptedKeyBlob::new(keyblob)?;
-            let hidden = tag::hidden(&[], self.root_of_trust()?)?;
-            let keyblob = self.keyblob_decrypt(encrypted_keyblob, hidden)?;
+            let (keyblob, _) = self.keyblob_parse_decrypt(keyblob, &[])?;
 
             // Now that we've got the key material, use a device-specific method to re-wrap it
             // with an ephemeral key.
@@ -1008,7 +1021,6 @@ impl<'a> KeyMintTa<'a> {
         app_data: Vec<u8>,
     ) -> Result<Vec<KeyCharacteristics>, Error> {
         // Parse and decrypt the keyblob, which requires extra hidden params.
-        let encrypted_keyblob = keyblob::EncryptedKeyBlob::new(key_blob)?;
         let mut params = vec_try_with_capacity!(2)?;
         if !app_id.is_empty() {
             params.push(KeyParam::ApplicationId(app_id)); // capacity enough
@@ -1016,8 +1028,7 @@ impl<'a> KeyMintTa<'a> {
         if !app_data.is_empty() {
             params.push(KeyParam::ApplicationData(app_data)); // capacity enough
         }
-        let hidden = tag::hidden(&params, self.root_of_trust()?)?;
-        let keyblob = self.keyblob_decrypt(encrypted_keyblob, hidden)?;
+        let (keyblob, _) = self.keyblob_parse_decrypt(key_blob, &params)?;
         Ok(keyblob.characteristics)
     }
 
@@ -1051,7 +1062,7 @@ impl<'a> KeyMintTa<'a> {
     }
 
     /// Return the root key used for key encryption.
-    fn root_kek(&self, context: &[u8]) -> RawKeyMaterial {
+    fn root_kek(&self, context: &[u8]) -> Result<RawKeyMaterial, Error> {
         self.dev.keys.root_kek(context)
     }
 
