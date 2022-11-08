@@ -496,7 +496,7 @@ fn check_ec_gen_params(params: &[KeyParam], sec_level: SecurityLevel) -> Result<
 }
 
 /// Find the first purpose value in the parameters.
-pub fn primary_purpose(params: &[KeyParam]) -> Result<KeyPurpose, Error> {
+fn primary_purpose(params: &[KeyParam]) -> Result<KeyPurpose, Error> {
     params
         .iter()
         .find_map(
