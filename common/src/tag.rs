@@ -2,15 +2,17 @@
 
 use crate::{
     crypto,
-    crypto::*,
-    km_err,
-    wire::keymint::{
+    crypto::{rsa::DecryptionMode, *},
+    km_err, try_to_vec, vec_try_with_capacity, Error, FallibleAllocExt,
+};
+use alloc::vec::Vec;
+use kmr_wire::{
+    keymint::{
         Algorithm, BlockMode, Digest, EcCurve, ErrorCode, KeyCharacteristics, KeyFormat, KeyParam,
         KeyPurpose, PaddingMode, SecurityLevel, Tag, DEFAULT_CERT_SERIAL, DEFAULT_CERT_SUBJECT,
     },
-    Error,
+    KeySizeInBits,
 };
-use alloc::{vec, vec::Vec};
 use log::warn;
 
 mod info;
@@ -36,33 +38,14 @@ pub const UNPOLICED_COPYABLE_TAGS: &[Tag] = &[
 ];
 
 /// Indication of whether secure storage is available.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum SecureStorage {
     Available,
     Unavailable,
 }
 
-// TODO: add a macro variant that returns a reference to the data in a tag whose contents are
-// a blob of data, to avoid the need for allocation.
-
-/// Macro to retrieve all of the values of a tag in a collection of `KeyParam`s.
-#[macro_export]
-macro_rules! get_tag_values {
-    { $params:expr, $variant:ident } => {
-        {
-            let mut result = alloc::vec::Vec::new();
-            for param in $params {
-                if let $crate::wire::keymint::KeyParam::$variant(v) = param {
-                    result.push(v.clone());
-                }
-            }
-            result
-        }
-    }
-}
-
-/// Macro to retrieve the (single) value of a tag in a collection of `KeyParam`s.
-/// There can be only one.
+/// Macro to retrieve a copy of the (single) value of a tag in a collection of `KeyParam`s.  There
+/// can be only one.  Only works for variants whose data type implements `Copy`.
 #[macro_export]
 macro_rules! get_tag_value {
     { $params:expr, $variant:ident, $err:expr } => {
@@ -70,9 +53,9 @@ macro_rules! get_tag_value {
             let mut result = None;
             let mut count = 0;
             for param in $params {
-                if let $crate::wire::keymint::KeyParam::$variant(v) = param {
+                if let kmr_wire::keymint::KeyParam::$variant(v) = param {
                     count += 1;
-                    result = Some(v.clone());
+                    result = Some(*v);
                 }
             }
             match count {
@@ -96,7 +79,7 @@ macro_rules! get_opt_tag_value {
             let mut result = None;
             let mut count = 0;
             for param in $params {
-                if let $crate::wire::keymint::KeyParam::$variant(v) = param {
+                if let kmr_wire::keymint::KeyParam::$variant(v) = param {
                     count += 1;
                     result = Some(v);
                 }
@@ -117,7 +100,7 @@ macro_rules! get_bool_tag_value {
         {
             let mut count = 0;
             for param in $params {
-                if let $crate::wire::keymint::KeyParam::$variant = param {
+                if let kmr_wire::keymint::KeyParam::$variant = param {
                     count += 1;
                 }
             }
@@ -137,7 +120,7 @@ macro_rules! contains_tag_value {
         {
             let mut found = false;
             for param in $params {
-                if let $crate::wire::keymint::KeyParam::$variant(v) = param {
+                if let kmr_wire::keymint::KeyParam::$variant(v) = param {
                     if *v == $value {
                         found = true;
                     }
@@ -175,7 +158,7 @@ pub fn transcribe_tags(
         let tag = param.tag();
         dup_checker.add(tag)?;
         if tags.iter().any(|t| *t == tag) {
-            dest.push(param.clone());
+            dest.try_push(param.clone())?;
         }
     }
     Ok(())
@@ -220,6 +203,27 @@ pub fn get_cert_serial(params: &[KeyParam]) -> Result<&[u8], Error> {
         .unwrap_or(DEFAULT_CERT_SERIAL))
 }
 
+/// Return the set of key parameters at the provided security level.
+pub fn characteristics_at(
+    chars: &[KeyCharacteristics],
+    sec_level: SecurityLevel,
+) -> Result<&[KeyParam], Error> {
+    let mut result: Option<&[KeyParam]> = None;
+    for chars in chars {
+        if chars.security_level != sec_level {
+            continue;
+        }
+        if result.is_none() {
+            result = Some(&chars.authorizations);
+        } else {
+            return Err(km_err!(InvalidKeyBlob, "multiple key characteristics at {:?}", sec_level));
+        }
+    }
+    result.ok_or_else(|| {
+        km_err!(InvalidKeyBlob, "no parameters at security level {:?} found", sec_level)
+    })
+}
+
 /// Get the certificate subject from a set of parameters, falling back to a default if not
 /// specified.
 pub fn get_cert_subject(params: &[KeyParam]) -> Result<&[u8], Error> {
@@ -232,16 +236,16 @@ pub fn get_cert_subject(params: &[KeyParam]) -> Result<&[u8], Error> {
 /// - `ApplicationId(data)` if present
 /// - `ApplicationData(data)` if present
 /// - `RootOfTrust(rot)` where `rot` is a hardcoded root of trust
-pub fn hidden(params: &[KeyParam], rot: &[u8]) -> Vec<KeyParam> {
-    let mut results = Vec::new();
+pub fn hidden(params: &[KeyParam], rot: &[u8]) -> Result<Vec<KeyParam>, Error> {
+    let mut results = vec_try_with_capacity!(3)?;
     if let Ok(Some(app_id)) = get_opt_tag_value!(params, ApplicationId) {
-        results.push(KeyParam::ApplicationId(app_id.to_vec()));
+        results.push(KeyParam::ApplicationId(try_to_vec(app_id)?));
     }
     if let Ok(Some(app_data)) = get_opt_tag_value!(params, ApplicationData) {
-        results.push(KeyParam::ApplicationData(app_data.to_vec()));
+        results.push(KeyParam::ApplicationData(try_to_vec(app_data)?));
     }
-    results.push(KeyParam::RootOfTrust(rot.to_vec()));
-    results
+    results.push(KeyParam::RootOfTrust(try_to_vec(rot)?));
+    Ok(results)
 }
 
 /// Build the set of key characteristics for a key that is about to be generated,
@@ -252,14 +256,14 @@ pub fn extract_key_gen_characteristics(
     params: &[KeyParam],
     sec_level: SecurityLevel,
 ) -> Result<(Vec<KeyCharacteristics>, KeyGenInfo), Error> {
-    let (chars, keygen_info) = match get_algorithm(params)? {
-        Algorithm::Rsa => extract_rsa_gen_characteristics(params, sec_level),
-        Algorithm::Ec => extract_ec_gen_characteristics(params, sec_level),
-        Algorithm::Aes => extract_aes_gen_characteristics(params, sec_level),
-        Algorithm::TripleDes => extract_3des_gen_characteristics(params),
-        Algorithm::Hmac => extract_hmac_gen_characteristics(params),
+    let keygen_info = match get_algorithm(params)? {
+        Algorithm::Rsa => check_rsa_gen_params(params, sec_level),
+        Algorithm::Ec => check_ec_gen_params(params, sec_level),
+        Algorithm::Aes => check_aes_gen_params(params, sec_level),
+        Algorithm::TripleDes => check_3des_gen_params(params),
+        Algorithm::Hmac => check_hmac_gen_params(params, sec_level),
     }?;
-    Ok((extract_key_characteristics(secure_storage, params, sec_level, chars)?, keygen_info))
+    Ok((extract_key_characteristics(secure_storage, params, &[], sec_level)?, keygen_info))
 }
 
 /// Build the set of key characteristics for a key that is about to be imported,
@@ -271,74 +275,87 @@ pub fn extract_key_import_characteristics(
     sec_level: SecurityLevel,
     key_format: KeyFormat,
     key_data: &[u8],
-) -> Result<(Vec<KeyCharacteristics>, PlaintextKeyMaterial), Error> {
-    let (chars, key_material) = match get_algorithm(params)? {
-        Algorithm::Rsa => {
-            extract_rsa_import_characteristics(imp.rsa, params, sec_level, key_format, key_data)
-        }
-        Algorithm::Ec => {
-            extract_ec_import_characteristics(imp.ec, params, sec_level, key_format, key_data)
-        }
-        Algorithm::Aes => {
-            extract_aes_import_characteristics(imp.aes, params, sec_level, key_format, key_data)
-        }
-        Algorithm::TripleDes => {
-            extract_3des_import_characteristics(imp.des, params, key_format, key_data)
-        }
+) -> Result<(Vec<KeyCharacteristics>, KeyMaterial), Error> {
+    let (deduced_params, key_material) = match get_algorithm(params)? {
+        Algorithm::Rsa => check_rsa_import_params(imp.rsa, params, sec_level, key_format, key_data),
+        Algorithm::Ec => check_ec_import_params(imp.ec, params, sec_level, key_format, key_data),
+        Algorithm::Aes => check_aes_import_params(imp.aes, params, sec_level, key_format, key_data),
+        Algorithm::TripleDes => check_3des_import_params(imp.des, params, key_format, key_data),
         Algorithm::Hmac => {
-            extract_hmac_import_characteristics(imp.hmac, params, key_format, key_data)
+            check_hmac_import_params(imp.hmac, params, sec_level, key_format, key_data)
         }
     }?;
-    Ok((extract_key_characteristics(secure_storage, params, sec_level, chars)?, key_material))
+    Ok((
+        extract_key_characteristics(secure_storage, params, &deduced_params, sec_level)?,
+        key_material,
+    ))
 }
 
 /// Build the set of key characteristics for a key that is about to be generated or imported,
-/// checking parameter validity along the way.
+/// checking parameter validity along the way. The `extra_params` argument provides additional
+/// parameters on top of `params`, such as those deduced from imported key material.
 fn extract_key_characteristics(
     secure_storage: SecureStorage,
     params: &[KeyParam],
+    extra_params: &[KeyParam],
     sec_level: SecurityLevel,
-    mut chars: Vec<KeyParam>,
 ) -> Result<Vec<KeyCharacteristics>, Error> {
-    // Input params should not contain anything that KeyMint adds.
-    if params.iter().any(|p| AUTO_ADDED_TAGS.contains(&p.tag())) {
-        return Err(km_err!(InvalidTag, "KeyMint-added tag included on key generation/import"));
-    }
-    if sec_level == SecurityLevel::Strongbox {
-        // StrongBox does not support tags that require per-key storage.
-        reject_tags(params, &[Tag::MaxUsesPerBoot, Tag::RollbackResistance])?;
-    }
-
-    // Copy across any general (not-algorithm-specific) characteristics.
-    transcribe_tags(&mut chars, params, UNPOLICED_COPYABLE_TAGS)?;
-    reject_incompatible_auth(&chars)?;
-
     // Separately accumulate any characteristics that are policed by Keystore.
-    let mut keystore_chars = vec![];
-    transcribe_tags(&mut keystore_chars, params, KEYSTORE_ENFORCED_TAGS)?;
+    let mut chars = Vec::new();
+    let mut keystore_chars = Vec::new();
+    for param in params.iter().chain(extra_params) {
+        let tag = param.tag();
 
-    // UsageCountLimit is peculiar. If its value is > 1, it should be Keystore-enforced.
-    // If its value is = 1, then it is KeyMint-enforced if secure storage is available,
-    // and Keystore-enforced otherwise.
-    if let Some(use_limit) = get_opt_tag_value!(params, UsageCountLimit)? {
-        match (use_limit, secure_storage) {
-            (1, SecureStorage::Available) => chars.push(KeyParam::UsageCountLimit(*use_limit)),
-            (1, SecureStorage::Unavailable) | (_, _) => {
-                keystore_chars.push(KeyParam::UsageCountLimit(*use_limit))
+        // Input params should not contain anything that KeyMint adds itself.
+        if AUTO_ADDED_CHARACTERISTICS.contains(&tag) {
+            return Err(km_err!(InvalidTag, "KeyMint-added tag included on key generation/import"));
+        }
+
+        if sec_level == SecurityLevel::Strongbox
+            && [Tag::MaxUsesPerBoot, Tag::RollbackResistance].contains(&tag)
+        {
+            // StrongBox does not support tags that require per-key storage.
+            return Err(km_err!(InvalidTag, "tag {:?} not allowed in StrongBox", param.tag()));
+        }
+
+        // UsageCountLimit is peculiar. If its value is > 1, it should be Keystore-enforced.
+        // If its value is = 1, then it is KeyMint-enforced if secure storage is available,
+        // and Keystore-enforced otherwise.
+        if let KeyParam::UsageCountLimit(use_limit) = param {
+            match (use_limit, secure_storage) {
+                (1, SecureStorage::Available) => {
+                    chars.try_push(KeyParam::UsageCountLimit(*use_limit))?
+                }
+                (1, SecureStorage::Unavailable) | (_, _) => {
+                    keystore_chars.try_push(KeyParam::UsageCountLimit(*use_limit))?
+                }
             }
         }
+
+        if KEYMINT_ENFORCED_CHARACTERISTICS.contains(&tag) {
+            chars.try_push(param.clone())?;
+        } else if KEYSTORE_ENFORCED_CHARACTERISTICS.contains(&tag) {
+            keystore_chars.try_push(param.clone())?;
+        } else if tag == Tag::UnlockedDeviceRequired {
+            // `UnlockedDeviceRequired` is policed by both KeyMint and Keystore, so put it in the
+            // KeyMint security level.
+            chars.try_push(param.clone())?;
+        }
     }
+
+    reject_incompatible_auth(&chars)?;
 
     // Use the same sort order for tags as was previously used.
     chars.sort_by(legacy::param_compare);
     keystore_chars.sort_by(legacy::param_compare);
 
-    let mut result = vec![KeyCharacteristics { security_level: sec_level, authorizations: chars }];
+    let mut result = Vec::new();
+    result.try_push(KeyCharacteristics { security_level: sec_level, authorizations: chars })?;
     if !keystore_chars.is_empty() {
-        result.push(KeyCharacteristics {
+        result.try_push(KeyCharacteristics {
             security_level: SecurityLevel::Keystore,
             authorizations: keystore_chars,
-        });
+        })?;
     }
     Ok(result)
 }
@@ -347,6 +364,8 @@ fn extract_key_characteristics(
 fn check_rsa_key_size(key_size: KeySizeInBits, sec_level: SecurityLevel) -> Result<(), Error> {
     // StrongBox only supports 2048-bit keys.
     match key_size {
+        KeySizeInBits(512) if sec_level != SecurityLevel::Strongbox => Ok(()),
+        KeySizeInBits(768) if sec_level != SecurityLevel::Strongbox => Ok(()),
         KeySizeInBits(1024) if sec_level != SecurityLevel::Strongbox => Ok(()),
         KeySizeInBits(2048) => Ok(()),
         KeySizeInBits(3072) if sec_level != SecurityLevel::Strongbox => Ok(()),
@@ -355,36 +374,30 @@ fn check_rsa_key_size(key_size: KeySizeInBits, sec_level: SecurityLevel) -> Resu
     }
 }
 
-/// Build the set of key characteristics for an RSA key that is about to be generated,
-/// checking parameter validity along the way.
-fn extract_rsa_gen_characteristics(
+/// Check RSA key generation parameter validity.
+fn check_rsa_gen_params(
     params: &[KeyParam],
     sec_level: SecurityLevel,
-) -> Result<(Vec<KeyParam>, KeyGenInfo), Error> {
+) -> Result<KeyGenInfo, Error> {
     // For key generation, size and public exponent must be explicitly specified.
     let key_size = get_tag_value!(params, KeySize, ErrorCode::UnsupportedKeySize)?;
     check_rsa_key_size(key_size, sec_level)?;
-
     let public_exponent = get_tag_value!(params, RsaPublicExponent, ErrorCode::InvalidArgument)?;
-    let mut chars = vec![
-        KeyParam::Algorithm(Algorithm::Rsa),
-        KeyParam::KeySize(key_size),
-        KeyParam::RsaPublicExponent(public_exponent),
-    ];
 
-    extract_rsa_characteristics(params, sec_level, &mut chars)?;
-    Ok((chars, KeyGenInfo::Rsa(key_size, public_exponent)))
+    check_rsa_params(params)?;
+    Ok(KeyGenInfo::Rsa(key_size, public_exponent))
 }
 
-/// Build the set of key characteristics for an RSA key that is about to be imported,
-/// checking parameter validity along the way.
-fn extract_rsa_import_characteristics(
+/// Check RSA key import parameter validity. Return the key material along with any key generation
+/// parameters that have been deduced from the key material (but which are not present in the input
+/// key parameters).
+fn check_rsa_import_params(
     rsa: &dyn Rsa,
     params: &[KeyParam],
     sec_level: SecurityLevel,
     key_format: KeyFormat,
     key_data: &[u8],
-) -> Result<(Vec<KeyParam>, PlaintextKeyMaterial), Error> {
+) -> Result<(Vec<KeyParam>, KeyMaterial), Error> {
     // Deduce key size and exponent from import data.
     if key_format != KeyFormat::Pkcs8 {
         return Err(km_err!(
@@ -393,96 +406,59 @@ fn extract_rsa_import_characteristics(
             key_format
         ));
     }
-    let (key, key_size, public_exponent) = rsa.import_pkcs8_key(key_data)?;
+    let (key, key_size, public_exponent) = rsa.import_pkcs8_key(key_data, params)?;
 
-    // If key size or exponent are explicitly specified, they must match.
-    if let Some(param_key_size) = get_opt_tag_value!(params, KeySize)? {
-        if *param_key_size != key_size {
-            return Err(km_err!(
-                ImportParameterMismatch,
-                "specified KEY_SIZE {:?} bits != actual key size {:?} for PKCS8 import",
-                param_key_size,
-                key_size
-            ));
+    // If key size or exponent are explicitly specified, they must match. If they were not
+    // specified, we emit them.
+    let mut deduced_chars = Vec::new();
+    match get_opt_tag_value!(params, KeySize)? {
+        Some(param_key_size) => {
+            if *param_key_size != key_size {
+                return Err(km_err!(
+                    ImportParameterMismatch,
+                    "specified KEY_SIZE {:?} bits != actual key size {:?} for PKCS8 import",
+                    param_key_size,
+                    key_size
+                ));
+            }
         }
+        None => deduced_chars.try_push(KeyParam::KeySize(key_size))?,
     }
-    if let Some(param_public_exponent) = get_opt_tag_value!(params, RsaPublicExponent)? {
-        if *param_public_exponent != public_exponent {
-            return Err(km_err!(
-                ImportParameterMismatch,
-                "specified RSA_PUBLIC_EXPONENT {:?} != actual exponent {:?} for PKCS8 import",
-                param_public_exponent,
-                public_exponent,
-            ));
+    match get_opt_tag_value!(params, RsaPublicExponent)? {
+        Some(param_public_exponent) => {
+            if *param_public_exponent != public_exponent {
+                return Err(km_err!(
+                    ImportParameterMismatch,
+                    "specified RSA_PUBLIC_EXPONENT {:?} != actual exponent {:?} for PKCS8 import",
+                    param_public_exponent,
+                    public_exponent,
+                ));
+            }
         }
+        None => deduced_chars.try_push(KeyParam::RsaPublicExponent(public_exponent))?,
     }
     check_rsa_key_size(key_size, sec_level)?;
 
-    let mut chars = vec![
-        KeyParam::Algorithm(Algorithm::Rsa),
-        KeyParam::KeySize(key_size),
-        KeyParam::RsaPublicExponent(public_exponent),
-    ];
-
-    extract_rsa_characteristics(params, sec_level, &mut chars)?;
-    Ok((chars, key))
+    check_rsa_params(params)?;
+    Ok((deduced_chars, key))
 }
 
-/// Build the set of key characteristics for an RSA key that is about to be generated or imported,
-/// checking parameter validity along the way.
-fn extract_rsa_characteristics(
-    params: &[KeyParam],
-    sec_level: SecurityLevel,
-    chars: &mut Vec<KeyParam>,
-) -> Result<(), Error> {
+/// Check the parameter validity for an RSA key that is about to be generated or imported.
+fn check_rsa_params(params: &[KeyParam]) -> Result<(), Error> {
     let mut seen_attest = false;
     let mut seen_non_attest = false;
     for param in params {
-        match param {
-            KeyParam::Purpose(purpose) => {
-                chars.push(KeyParam::Purpose(*purpose));
-                match purpose {
-                    KeyPurpose::Sign | KeyPurpose::Decrypt | KeyPurpose::WrapKey => {
-                        seen_non_attest = true
-                    }
-                    KeyPurpose::AttestKey => seen_attest = true,
-                    KeyPurpose::Verify | KeyPurpose::Encrypt => {} // public key operations
-                    KeyPurpose::AgreeKey => {
-                        warn!("Generating RSA key with invalid purpose {:?}", purpose)
-                    }
+        if let KeyParam::Purpose(purpose) = param {
+            match purpose {
+                KeyPurpose::Sign | KeyPurpose::Decrypt | KeyPurpose::WrapKey => {
+                    seen_non_attest = true
+                }
+                KeyPurpose::AttestKey => seen_attest = true,
+                KeyPurpose::Verify | KeyPurpose::Encrypt => {} // public key operations
+                KeyPurpose::AgreeKey => {
+                    warn!("Generating RSA key with invalid purpose {:?}", purpose)
                 }
             }
-            KeyParam::Padding(pmode) => match pmode {
-                PaddingMode::None
-                | PaddingMode::RsaOaep
-                | PaddingMode::RsaPss
-                | PaddingMode::RsaPkcs115Encrypt
-                | PaddingMode::RsaPkcs115Sign => {
-                    chars.push(KeyParam::Padding(*pmode));
-                }
-                PaddingMode::Pkcs7 => {
-                    warn!("Generating RSA key with invalid padding {:?}", pmode);
-                    chars.push(KeyParam::Padding(*pmode));
-                }
-            },
-            KeyParam::RsaOaepMgfDigest(digest) => match digest {
-                Digest::Md5
-                | Digest::Sha1
-                | Digest::Sha224
-                | Digest::Sha256
-                | Digest::Sha384
-                | Digest::Sha512 => {
-                    chars.push(KeyParam::RsaOaepMgfDigest(*digest));
-                }
-                Digest::None => {
-                    return Err(km_err!(
-                        IncompatibleMgfDigest,
-                        "OAEP MGF digest {:?} not allowed",
-                        digest
-                    ))
-                }
-            },
-            _ => {}
         }
     }
     if seen_attest && seen_non_attest {
@@ -491,27 +467,19 @@ fn extract_rsa_characteristics(
             "keys with ATTEST_KEY must have no other purpose"
         ));
     }
-    add_digests(chars, sec_level, params)?;
-    reject_tags(params, &[Tag::BlockMode, Tag::EcCurve, Tag::CallerNonce])?;
     Ok(())
 }
 
-/// Build the set of key characteristics for an EC key that is about to be generated,
-/// checking parameter validity along the way.
-fn extract_ec_gen_characteristics(
-    params: &[KeyParam],
-    sec_level: SecurityLevel,
-) -> Result<(Vec<KeyParam>, KeyGenInfo), Error> {
+/// Check EC key generation parameter validity.
+fn check_ec_gen_params(params: &[KeyParam], sec_level: SecurityLevel) -> Result<KeyGenInfo, Error> {
     // For key generation, the curve must be explicitly specified.
     let ec_curve = get_ec_curve(params)?;
-    let mut chars = vec![KeyParam::Algorithm(Algorithm::Ec), KeyParam::EcCurve(ec_curve)];
 
-    let purpose = extract_ec_characteristics(ec_curve, params, sec_level, &mut chars)?;
-
+    let purpose = check_ec_params(ec_curve, params, sec_level)?;
     let keygen_info = match (ec_curve, purpose) {
-        (EcCurve::Curve25519, KeyPurpose::Sign) => KeyGenInfo::Ed25519,
-        (EcCurve::Curve25519, KeyPurpose::AttestKey) => KeyGenInfo::Ed25519,
-        (EcCurve::Curve25519, KeyPurpose::AgreeKey) => KeyGenInfo::X25519,
+        (EcCurve::Curve25519, Some(KeyPurpose::Sign)) => KeyGenInfo::Ed25519,
+        (EcCurve::Curve25519, Some(KeyPurpose::AttestKey)) => KeyGenInfo::Ed25519,
+        (EcCurve::Curve25519, Some(KeyPurpose::AgreeKey)) => KeyGenInfo::X25519,
         (EcCurve::Curve25519, _) => {
             return Err(km_err!(
                 IncompatiblePurpose,
@@ -524,82 +492,123 @@ fn extract_ec_gen_characteristics(
         (EcCurve::P384, _) => KeyGenInfo::NistEc(ec::NistCurve::P384),
         (EcCurve::P521, _) => KeyGenInfo::NistEc(ec::NistCurve::P521),
     };
-    Ok((chars, keygen_info))
+    Ok(keygen_info)
 }
 
-/// Build the set of key characteristics for an EC key that is about to be imported,
-/// checking parameter validity along the way.
-fn extract_ec_import_characteristics(
+/// Find the first purpose value in the parameters.
+pub fn primary_purpose(params: &[KeyParam]) -> Result<KeyPurpose, Error> {
+    params
+        .iter()
+        .find_map(
+            |param| if let KeyParam::Purpose(purpose) = param { Some(*purpose) } else { None },
+        )
+        .ok_or_else(|| km_err!(IncompatiblePurpose, "no purpose found for key!"))
+}
+
+/// Check EC key import parameter validity. Return the key material along with any key generation
+/// parameters that have been deduced from the key material (but which are not present in the input
+/// key parameters).
+fn check_ec_import_params(
     ec: &dyn Ec,
     params: &[KeyParam],
     sec_level: SecurityLevel,
     key_format: KeyFormat,
     key_data: &[u8],
-) -> Result<(Vec<KeyParam>, PlaintextKeyMaterial), Error> {
-    // For key import, the curve must be explicitly specified.
-    let curve = get_ec_curve(params)?;
-
-    // To disinguish between Ed25519 and X25519, need to examine the purpose for the key.
-    // Look for AgreeKey as it cannot be combined with other purposes.
-    let primary_purpose = params
-        .iter()
-        .filter_map(
-            |param| if let KeyParam::Purpose(purpose) = param { Some(purpose) } else { None },
-        )
-        .next()
-        .ok_or_else(|| km_err!(IncompatiblePurpose, "no purpose found on EC import"))?;
-
+) -> Result<(Vec<KeyParam>, KeyMaterial), Error> {
     // Curve25519 can be imported as PKCS8 or raw; all other curves must be PKCS8.
-    let key = match (curve, key_format) {
-        (EcCurve::Curve25519, KeyFormat::Raw) => {
-            if *primary_purpose == KeyPurpose::AgreeKey {
-                ec.import_raw_x25519_key(key_data)?
+    // If we need to disinguish between Ed25519 and X25519, we need to examine the purpose for the
+    // key -- look for `AgreeKey` as it cannot be combined with other purposes.
+    let (key, curve) = match key_format {
+        KeyFormat::Raw if get_ec_curve(params)? == EcCurve::Curve25519 => {
+            // Raw key import must specify the curve (and the only valid option is Curve25519
+            // currently).
+            if primary_purpose(params)? == KeyPurpose::AgreeKey {
+                (ec.import_raw_x25519_key(key_data, params)?, EcCurve::Curve25519)
             } else {
-                ec.import_raw_ed25519_key(key_data)?
+                (ec.import_raw_ed25519_key(key_data, params)?, EcCurve::Curve25519)
             }
         }
-        (curve, KeyFormat::Pkcs8) => {
-            let key = ec.import_pkcs8_key(curve, key_data)?;
-            match (&key, primary_purpose) {
-                (PlaintextKeyMaterial::Ec(_, ec::Key::Ed25519(_)), KeyPurpose::AgreeKey) => {
+        KeyFormat::Pkcs8 => {
+            let key = ec.import_pkcs8_key(key_data, params)?;
+            let curve = match &key {
+                KeyMaterial::Ec(curve, CurveType::Nist, _) => *curve,
+                KeyMaterial::Ec(EcCurve::Curve25519, CurveType::EdDsa, _) => {
+                    if primary_purpose(params)? == KeyPurpose::AgreeKey {
+                        return Err(km_err!(
+                            IncompatiblePurpose,
+                            "can't use EdDSA key for key agreement"
+                        ));
+                    }
+                    EcCurve::Curve25519
+                }
+                KeyMaterial::Ec(EcCurve::Curve25519, CurveType::Xdh, _) => {
+                    if primary_purpose(params)? != KeyPurpose::AgreeKey {
+                        return Err(km_err!(IncompatiblePurpose, "can't use XDH key for signing"));
+                    }
+                    EcCurve::Curve25519
+                }
+                _ => {
                     return Err(km_err!(
-                        IncompatiblePurpose,
-                        "can't use Ed25519 key for key agreement"
-                    ));
+                        ImportParameterMismatch,
+                        "unexpected key type from EC import"
+                    ))
                 }
-                (PlaintextKeyMaterial::Ec(_, ec::Key::X25519(_)), purpose)
-                    if *purpose != KeyPurpose::AgreeKey =>
-                {
-                    return Err(km_err!(IncompatiblePurpose, "can't use X25519 key for signing"));
-                }
-                _ => {}
-            }
-            key
+            };
+            (key, curve)
         }
-        (curve, key_format) => {
+        _ => {
             return Err(km_err!(
                 UnsupportedKeyFormat,
-                "invalid import format ({:?}) for {:?} EC key",
+                "invalid import format ({:?}) for EC key",
                 key_format,
-                curve,
             ));
         }
     };
 
-    let mut chars = vec![KeyParam::Algorithm(Algorithm::Ec), KeyParam::EcCurve(curve)];
+    // If curve was explicitly specified, it must match. If not specified, populate it in the
+    // deduced characteristics.
+    let mut deduced_chars = Vec::new();
+    match get_opt_tag_value!(params, EcCurve)? {
+        Some(specified_curve) => {
+            if *specified_curve != curve {
+                return Err(km_err!(
+                    ImportParameterMismatch,
+                    "imported EC key claimed curve {:?} but is {:?}",
+                    specified_curve,
+                    curve
+                ));
+            }
+        }
+        None => deduced_chars.try_push(KeyParam::EcCurve(curve))?,
+    }
 
-    extract_ec_characteristics(curve, params, sec_level, &mut chars)?;
-    Ok((chars, key))
+    // If key size was explicitly specified, it must match. If not specified, populate it in the
+    // deduced characteristics.
+    let key_size = ec::curve_to_key_size(curve);
+    match get_opt_tag_value!(params, KeySize)? {
+        Some(param_key_size) => {
+            if *param_key_size != key_size {
+                return Err(km_err!(
+                    ImportParameterMismatch,
+                    "specified KEY_SIZE {:?} bits != actual key size {:?} for PKCS8 import",
+                    param_key_size,
+                    key_size
+                ));
+            }
+        }
+        None => deduced_chars.try_push(KeyParam::KeySize(key_size))?,
+    }
+
+    check_ec_params(curve, params, sec_level)?;
+    Ok((deduced_chars, key))
 }
 
-/// Build the set of key characteristics for an EC key that is about to be generated or imported,
-/// checking parameter validity along the way.
-fn extract_ec_characteristics(
+/// Check the parameter validity for an EC key that is about to be generated or imported.
+fn check_ec_params(
     curve: EcCurve,
     params: &[KeyParam],
     sec_level: SecurityLevel,
-    chars: &mut Vec<KeyParam>,
-) -> Result<KeyPurpose, Error> {
+) -> Result<Option<KeyPurpose>, Error> {
     if sec_level == SecurityLevel::Strongbox && curve != EcCurve::P256 {
         return Err(km_err!(UnsupportedEcCurve, "invalid curve ({:?}) for StrongBox", curve));
     }
@@ -607,21 +616,11 @@ fn extract_ec_characteristics(
     // Key size is not needed, but if present should match the curve.
     if let Some(key_size) = get_opt_tag_value!(params, KeySize)? {
         match curve {
-            EcCurve::P224 if *key_size == KeySizeInBits(224) => {
-                chars.push(KeyParam::KeySize(*key_size))
-            }
-            EcCurve::P256 if *key_size == KeySizeInBits(256) => {
-                chars.push(KeyParam::KeySize(*key_size))
-            }
-            EcCurve::P384 if *key_size == KeySizeInBits(384) => {
-                chars.push(KeyParam::KeySize(*key_size))
-            }
-            EcCurve::P521 if *key_size == KeySizeInBits(521) => {
-                chars.push(KeyParam::KeySize(*key_size))
-            }
-            EcCurve::Curve25519 if *key_size == KeySizeInBits(256) => {
-                chars.push(KeyParam::KeySize(*key_size))
-            }
+            EcCurve::P224 if *key_size == KeySizeInBits(224) => {}
+            EcCurve::P256 if *key_size == KeySizeInBits(256) => {}
+            EcCurve::P384 if *key_size == KeySizeInBits(384) => {}
+            EcCurve::P521 if *key_size == KeySizeInBits(521) => {}
+            EcCurve::Curve25519 if *key_size == KeySizeInBits(256) => {}
             _ => {
                 return Err(km_err!(
                     InvalidArgument,
@@ -633,14 +632,12 @@ fn extract_ec_characteristics(
         }
     }
 
-    // TODO: replace this with use of FlagSet<KeyPurpose>
     let mut seen_attest = false;
     let mut seen_sign = false;
     let mut seen_agree = false;
     let mut primary_purpose = None;
     for param in params {
         if let KeyParam::Purpose(purpose) = param {
-            chars.push(KeyParam::Purpose(*purpose));
             match purpose {
                 KeyPurpose::Sign => seen_sign = true,
                 KeyPurpose::AgreeKey => seen_agree = true,
@@ -649,7 +646,7 @@ fn extract_ec_characteristics(
                 _ => warn!("Generating EC key with invalid purpose {:?}", purpose),
             }
             if primary_purpose.is_none() {
-                primary_purpose = Some(purpose);
+                primary_purpose = Some(*purpose);
             }
         }
     }
@@ -668,61 +665,17 @@ fn extract_ec_characteristics(
             "curve25519 keys must be either SIGN/ATTEST_KEY or AGREE_KEY, not both"
         ));
     }
-    let purpose =
-        primary_purpose.ok_or_else(|| km_err!(UnsupportedPurpose, "no key purpose found"))?;
 
-    add_digests(chars, sec_level, params)?;
-
-    reject_tags(
-        params,
-        &[Tag::BlockMode, Tag::CallerNonce, Tag::RsaPublicExponent, Tag::RsaOaepMgfDigest],
-    )?;
-    Ok(*purpose)
+    Ok(primary_purpose)
 }
 
-/// Extract the `Tag::DIGEST` values from the parameters.
-fn add_digests(
-    chars: &mut Vec<KeyParam>,
-    sec_level: SecurityLevel,
-    params: &[KeyParam],
-) -> Result<(), Error> {
-    for param in params {
-        if let KeyParam::Digest(digest) = param {
-            match digest {
-                Digest::Sha256 => {
-                    chars.push(KeyParam::Digest(*digest));
-                }
-                Digest::None
-                | Digest::Md5
-                | Digest::Sha1
-                | Digest::Sha224
-                | Digest::Sha384
-                | Digest::Sha512 => {
-                    if sec_level == SecurityLevel::Strongbox {
-                        return Err(km_err!(
-                            UnsupportedDigest,
-                            "unsupported digest {:?} for STRONGBOX",
-                            digest
-                        ));
-                    } else {
-                        chars.push(KeyParam::Digest(*digest));
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Build the set of key characteristics for an AES key that is about to be generated,
-/// checking parameter validity along the way.
-fn extract_aes_gen_characteristics(
+/// Check AES key generation parameter validity.
+fn check_aes_gen_params(
     params: &[KeyParam],
     sec_level: SecurityLevel,
-) -> Result<(Vec<KeyParam>, KeyGenInfo), Error> {
+) -> Result<KeyGenInfo, Error> {
     // For key generation, the size must be explicitly specified.
     let key_size = get_tag_value!(params, KeySize, ErrorCode::UnsupportedKeySize)?;
-    let mut chars = vec![KeyParam::Algorithm(Algorithm::Aes), KeyParam::KeySize(key_size)];
 
     let keygen_info = match key_size {
         KeySizeInBits(128) => KeyGenInfo::Aes(aes::Variant::Aes128),
@@ -739,64 +692,37 @@ fn extract_aes_gen_characteristics(
         }
     };
 
-    extract_aes_characteristics(params, &mut chars)?;
-    Ok((chars, keygen_info))
+    check_aes_params(params)?;
+    Ok(keygen_info)
 }
 
-/// Build the set of key characteristics for an AES key that is about to be imported,
-/// checking parameter validity along the way.
-fn extract_aes_import_characteristics(
+/// Check AES key import parameter validity. Return the key material along with any key generation
+/// parameters that have been deduced from the key material (but which are not present in the input
+/// key parameters).
+fn check_aes_import_params(
     aes: &dyn Aes,
     params: &[KeyParam],
     sec_level: SecurityLevel,
     key_format: KeyFormat,
     key_data: &[u8],
-) -> Result<(Vec<KeyParam>, PlaintextKeyMaterial), Error> {
+) -> Result<(Vec<KeyParam>, KeyMaterial), Error> {
     require_raw(key_format)?;
-    let (key, key_size) = aes.import_key(key_data)?;
+    let (key, key_size) = aes.import_key(key_data, params)?;
     if key_size == KeySizeInBits(192) && sec_level == SecurityLevel::Strongbox {
         return Err(km_err!(
             UnsupportedKeySize,
             "unsupported KEY_SIZE=192 bits for AES on StrongBox",
         ));
     }
-    require_matching_key_size(params, key_size)?;
+    let deduced_chars = require_matching_key_size(params, key_size)?;
 
-    let mut chars = vec![KeyParam::Algorithm(Algorithm::Aes), KeyParam::KeySize(key_size)];
-    extract_aes_characteristics(params, &mut chars)?;
-    Ok((chars, key))
+    check_aes_params(params)?;
+    Ok((deduced_chars, key))
 }
 
-/// Build the set of key characteristics for an AES key that is about to be generated or imported,
-/// checking parameter validity along the way.
-fn extract_aes_characteristics(
-    params: &[KeyParam],
-    chars: &mut Vec<KeyParam>,
-) -> Result<(), Error> {
-    let mut gcm_support = false;
-    for param in params {
-        match param {
-            KeyParam::Purpose(purpose) => chars.push(KeyParam::Purpose(*purpose)),
-            KeyParam::BlockMode(bmode) => match bmode {
-                BlockMode::Ecb | BlockMode::Cbc | BlockMode::Ctr => {
-                    chars.push(KeyParam::BlockMode(*bmode))
-                }
-                BlockMode::Gcm => {
-                    gcm_support = true;
-                    chars.push(KeyParam::BlockMode(*bmode));
-                }
-            },
-            KeyParam::Padding(pmode) => match pmode {
-                PaddingMode::None | PaddingMode::Pkcs7 => {
-                    chars.push(KeyParam::Padding(*pmode));
-                }
-                p => return Err(km_err!(IncompatiblePaddingMode, "invalid padding mode {:?}", p)),
-            },
-            KeyParam::CallerNonce => chars.push(KeyParam::CallerNonce),
-            _ => {}
-        }
-    }
-
+/// Check the parameter validity for an AES key that is about to be generated or imported.
+fn check_aes_params(params: &[KeyParam]) -> Result<(), Error> {
+    let gcm_support = params.iter().any(|p| *p == KeyParam::BlockMode(BlockMode::Gcm));
     if gcm_support {
         let min_mac_len = get_tag_value!(params, MinMacLength, ErrorCode::MissingMinMacLength)?;
         if (min_mac_len % 8 != 0) || !(96..=128).contains(&min_mac_len) {
@@ -806,20 +732,12 @@ fn extract_aes_characteristics(
                 min_mac_len
             ));
         }
-        chars.push(KeyParam::MinMacLength(min_mac_len));
-    } else {
-        reject_tags(params, &[Tag::MinMacLength])?;
     }
-
-    reject_tags(params, &[Tag::EcCurve, Tag::RsaPublicExponent, Tag::RsaOaepMgfDigest])?;
     Ok(())
 }
 
-/// Build the set of key characteristics for a triple DES key that is about to be generated,
-/// checking parameter validity along the way.
-fn extract_3des_gen_characteristics(
-    params: &[KeyParam],
-) -> Result<(Vec<KeyParam>, KeyGenInfo), Error> {
+/// Check triple DES key generation parameter validity.
+fn check_3des_gen_params(params: &[KeyParam]) -> Result<KeyGenInfo, Error> {
     // For key generation, the size (168) must be explicitly specified.
     let key_size = get_tag_value!(params, KeySize, ErrorCode::UnsupportedKeySize)?;
     if key_size != KeySizeInBits(168) {
@@ -829,108 +747,70 @@ fn extract_3des_gen_characteristics(
             key_size
         ));
     }
-    let mut chars = vec![KeyParam::Algorithm(Algorithm::TripleDes), KeyParam::KeySize(key_size)];
-    extract_3des_characteristics(params, &mut chars)?;
-    Ok((chars, KeyGenInfo::TripleDes))
+    Ok(KeyGenInfo::TripleDes)
 }
 
-/// Build the set of key characteristics for a triple DES key that is about to be imported,
-/// checking parameter validity along the way.
-fn extract_3des_import_characteristics(
+/// Check triple DES key import parameter validity. Return the key material along with any key
+/// generation parameters that have been deduced from the key material (but which are not present in
+/// the input key parameters).
+fn check_3des_import_params(
     des: &dyn Des,
     params: &[KeyParam],
     key_format: KeyFormat,
     key_data: &[u8],
-) -> Result<(Vec<KeyParam>, PlaintextKeyMaterial), Error> {
+) -> Result<(Vec<KeyParam>, KeyMaterial), Error> {
     require_raw(key_format)?;
-    let key = des.import_key(key_data)?;
+    let key = des.import_key(key_data, params)?;
     // If the key size is specified as a parameter, it must be 168. Note that this
     // is not equal to 8 x 24 (the data size).
-    require_matching_key_size(params, des::KEY_SIZE_BITS)?;
+    let deduced_chars = require_matching_key_size(params, des::KEY_SIZE_BITS)?;
 
-    let mut chars =
-        vec![KeyParam::Algorithm(Algorithm::TripleDes), KeyParam::KeySize(des::KEY_SIZE_BITS)];
-    extract_3des_characteristics(params, &mut chars)?;
-    Ok((chars, key))
+    Ok((deduced_chars, key))
 }
 
-/// Build the set of key characteristics for a triple DES key that is about to be generated or
-/// imported, checking parameter validity along the way.
-fn extract_3des_characteristics(
+/// Check HMAC key generation parameter validity.
+fn check_hmac_gen_params(
     params: &[KeyParam],
-    chars: &mut Vec<KeyParam>,
-) -> Result<(), Error> {
-    for param in params {
-        match param {
-            KeyParam::Purpose(purpose) => chars.push(KeyParam::Purpose(*purpose)),
-            KeyParam::BlockMode(bmode) => match bmode {
-                BlockMode::Ecb | BlockMode::Cbc => chars.push(KeyParam::BlockMode(*bmode)),
-                BlockMode::Ctr | BlockMode::Gcm => {
-                    return Err(km_err!(IncompatibleBlockMode, "invalid block mode {:?}", bmode))
-                }
-            },
-            KeyParam::Padding(pmode) => match pmode {
-                PaddingMode::None | PaddingMode::Pkcs7 => {
-                    chars.push(KeyParam::Padding(*pmode));
-                }
-                p => return Err(km_err!(IncompatiblePaddingMode, "invalid padding mode {:?}", p)),
-            },
-            KeyParam::CallerNonce => chars.push(KeyParam::CallerNonce),
-            _ => {}
-        }
-    }
-
-    reject_tags(
-        params,
-        &[Tag::MinMacLength, Tag::EcCurve, Tag::RsaPublicExponent, Tag::RsaOaepMgfDigest],
-    )?;
-    Ok(())
-}
-
-/// Build the set of key characteristics for an HMAC key that is about to be generated,
-/// checking parameter validity along the way.
-fn extract_hmac_gen_characteristics(
-    params: &[KeyParam],
-) -> Result<(Vec<KeyParam>, KeyGenInfo), Error> {
+    sec_level: SecurityLevel,
+) -> Result<KeyGenInfo, Error> {
     // For key generation the size must be explicitly specified.
     let key_size = get_tag_value!(params, KeySize, ErrorCode::UnsupportedKeySize)?;
-    hmac::valid_hal_size(key_size)?;
-    let mut chars = vec![KeyParam::Algorithm(Algorithm::Hmac), KeyParam::KeySize(key_size)];
-    extract_hmac_characteristics(params, &mut chars)?;
-    Ok((chars, KeyGenInfo::Hmac(key_size)))
+    check_hmac_params(params, sec_level, key_size)?;
+    Ok(KeyGenInfo::Hmac(key_size))
 }
 
 /// Build the set of key characteristics for an HMAC key that is about to be imported,
 /// checking parameter validity along the way.
-fn extract_hmac_import_characteristics(
+fn check_hmac_import_params(
     hmac: &dyn Hmac,
     params: &[KeyParam],
+    sec_level: SecurityLevel,
     key_format: KeyFormat,
     key_data: &[u8],
-) -> Result<(Vec<KeyParam>, PlaintextKeyMaterial), Error> {
+) -> Result<(Vec<KeyParam>, KeyMaterial), Error> {
     require_raw(key_format)?;
-    let (key, key_size) = hmac.import_key(key_data)?;
-    hmac::valid_hal_size(key_size)?;
-    require_matching_key_size(params, key_size)?;
+    let (key, key_size) = hmac.import_key(key_data, params)?;
+    let deduced_chars = require_matching_key_size(params, key_size)?;
 
-    let mut chars = vec![KeyParam::Algorithm(Algorithm::Hmac), KeyParam::KeySize(key_size)];
-    extract_hmac_characteristics(params, &mut chars)?;
-    Ok((chars, key))
+    check_hmac_params(params, sec_level, key_size)?;
+    Ok((deduced_chars, key))
 }
 
-/// Build the set of key characteristics for an HMAC key that is about to be generated or
-/// imported, checking validity along the way.
-fn extract_hmac_characteristics(
+/// Check the parameter validity for an HMAC key that is about to be generated or imported.
+fn check_hmac_params(
     params: &[KeyParam],
-    chars: &mut Vec<KeyParam>,
+    sec_level: SecurityLevel,
+    key_size: KeySizeInBits,
 ) -> Result<(), Error> {
+    if sec_level == SecurityLevel::Strongbox {
+        hmac::valid_strongbox_hal_size(key_size)?;
+    } else {
+        hmac::valid_hal_size(key_size)?;
+    }
     let digest = get_tag_value!(params, Digest, ErrorCode::UnsupportedDigest)?;
     if digest == Digest::None {
         return Err(km_err!(UnsupportedDigest, "unsupported digest {:?}", digest));
     }
-    chars.push(KeyParam::Digest(digest));
-
-    transcribe_tags(chars, params, &[Tag::Purpose])?;
 
     let min_mac_len = get_tag_value!(params, MinMacLength, ErrorCode::MissingMinMacLength)?;
     if (min_mac_len % 8 != 0) || !(64..=512).contains(&min_mac_len) {
@@ -940,18 +820,6 @@ fn extract_hmac_characteristics(
             min_mac_len
         ));
     }
-    chars.push(KeyParam::MinMacLength(min_mac_len));
-
-    reject_tags(
-        params,
-        &[
-            Tag::BlockMode,
-            Tag::EcCurve,
-            Tag::CallerNonce,
-            Tag::RsaPublicExponent,
-            Tag::RsaOaepMgfDigest,
-        ],
-    )?;
     Ok(())
 }
 
@@ -967,19 +835,26 @@ fn require_raw(key_format: KeyFormat) -> Result<(), Error> {
     Ok(())
 }
 
-/// Check that any `Tag::KEY_SIZE` value, if specified, matches.
-fn require_matching_key_size(params: &[KeyParam], key_size: KeySizeInBits) -> Result<(), Error> {
-    if let Some(param_key_size) = get_opt_tag_value!(params, KeySize)? {
-        if *param_key_size != key_size {
-            return Err(km_err!(
-                ImportParameterMismatch,
-                "specified KEY_SIZE {:?} bits != actual key size {:?}",
-                param_key_size,
-                key_size
-            ));
+/// Check or populate a `Tag::KEY_SIZE` value.
+fn require_matching_key_size(
+    params: &[KeyParam],
+    key_size: KeySizeInBits,
+) -> Result<Vec<KeyParam>, Error> {
+    let mut deduced_chars = Vec::new();
+    match get_opt_tag_value!(params, KeySize)? {
+        Some(param_key_size) => {
+            if *param_key_size != key_size {
+                return Err(km_err!(
+                    ImportParameterMismatch,
+                    "specified KEY_SIZE {:?} bits != actual key size {:?}",
+                    param_key_size,
+                    key_size
+                ));
+            }
         }
+        None => deduced_chars.try_push(KeyParam::KeySize(key_size))?,
     }
-    Ok(())
+    Ok(deduced_chars)
 }
 
 /// Return an error if any of the `exclude` tags are found in `params`.
@@ -994,10 +869,30 @@ fn reject_tags(params: &[KeyParam], exclude: &[Tag]) -> Result<(), Error> {
 
 /// Reject incompatible combinations of authentication tags.
 fn reject_incompatible_auth(params: &[KeyParam]) -> Result<(), Error> {
-    if get_bool_tag_value!(params, NoAuthRequired)? {
-        reject_tags(params, &[Tag::UserSecureId, Tag::UserAuthType])?;
+    let mut seen_user_secure_id = false;
+    let mut seen_auth_type = false;
+    let mut seen_no_auth = false;
+
+    for param in params {
+        match param {
+            KeyParam::UserSecureId(_sid) => seen_user_secure_id = true,
+            KeyParam::UserAuthType(_atype) => seen_auth_type = true,
+            KeyParam::NoAuthRequired => seen_no_auth = true,
+            _ => {}
+        }
     }
-    // TODO: check what other combinations need to be policed
+
+    if seen_no_auth {
+        if seen_user_secure_id {
+            return Err(km_err!(InvalidTag, "found both NO_AUTH_REQUIRED and USER_SECURE_ID"));
+        }
+        if seen_auth_type {
+            return Err(km_err!(InvalidTag, "found both NO_AUTH_REQUIRED and USER_AUTH_TYPE"));
+        }
+    }
+    if seen_user_secure_id && !seen_auth_type {
+        return Err(km_err!(InvalidTag, "found USER_SECURE_ID but no USER_AUTH_TYPE"));
+    }
     Ok(())
 }
 
@@ -1040,15 +935,14 @@ pub fn check_begin_params(
             purpose
         ));
     }
+    if get_bool_tag_value!(chars, StorageKey)? {
+        return Err(km_err!(StorageKeyUnsupported, "attempt to use storage key",));
+    }
     let nonce = get_opt_tag_value!(params, Nonce)?;
     if get_bool_tag_value!(chars, CallerNonce)? {
         // Caller-provided nonces are allowed.
     } else if nonce.is_some() && purpose == KeyPurpose::Encrypt {
         return Err(km_err!(CallerNonceProhibited, "caller nonce not allowed for encryption"));
-    }
-    if get_bool_tag_value!(chars, BootloaderOnly)? {
-        // TODO: allow use of these keys before a notification that the bootloader is done?
-        return Err(km_err!(InvalidKeyBlob, "bootloader-only key"));
     }
 
     // For various parameters, if they are specified in the begin parameters, the same
@@ -1129,8 +1023,7 @@ fn for_encryption(purpose: KeyPurpose) -> bool {
 
 /// Indicate whether a [`KeyPurpose`] is for signing.
 fn for_signing(purpose: KeyPurpose) -> bool {
-    // TODO: maybe treat ATTEST_KEY differently? ignore padding and digest in that case?
-    purpose == KeyPurpose::Sign || purpose == KeyPurpose::AttestKey
+    purpose == KeyPurpose::Sign
 }
 
 /// Check that an RSA operation with the given `purpose` and `params` can validly be started
@@ -1140,6 +1033,7 @@ fn check_begin_rsa_params(
     purpose: KeyPurpose,
     params: &[KeyParam],
 ) -> Result<(), Error> {
+    reject_tags(params, &[Tag::BlockMode])?;
     let padding = get_padding_mode(params)?;
     let mut digest = None;
     if for_signing(purpose) || (for_encryption(purpose) && padding == PaddingMode::RsaOaep) {
@@ -1208,6 +1102,7 @@ fn check_begin_ec_params(
     purpose: KeyPurpose,
     params: &[KeyParam],
 ) -> Result<(), Error> {
+    reject_tags(params, &[Tag::BlockMode])?;
     let curve = get_ec_curve(chars)?;
     if purpose == KeyPurpose::Sign {
         let digest = get_digest(params)?;
@@ -1229,6 +1124,7 @@ fn check_begin_aes_params(
     params: &[KeyParam],
     caller_nonce: Option<&[u8]>,
 ) -> Result<(), Error> {
+    reject_tags(params, &[Tag::Digest, Tag::RsaOaepMgfDigest])?;
     let bmode = get_block_mode(params)?;
     let padding = get_padding_mode(params)?;
 
@@ -1291,8 +1187,20 @@ fn check_begin_aes_params(
 /// Check that a 3-DES operation with the given `purpose` and `params` can validly be started
 /// using a key with characteristics `chars`.
 fn check_begin_3des_params(params: &[KeyParam], caller_nonce: Option<&[u8]>) -> Result<(), Error> {
+    reject_tags(params, &[Tag::Digest, Tag::RsaOaepMgfDigest])?;
     let bmode = get_block_mode(params)?;
     let _padding = get_padding_mode(params)?;
+
+    match bmode {
+        BlockMode::Cbc | BlockMode::Ecb => {}
+        _ => {
+            return Err(km_err!(
+                IncompatibleBlockMode,
+                "block mode {:?} not valid for 3-DES",
+                bmode
+            ))
+        }
+    }
 
     if let Some(nonce) = caller_nonce {
         match bmode {
@@ -1317,6 +1225,7 @@ fn check_begin_hmac_params(
     purpose: KeyPurpose,
     params: &[KeyParam],
 ) -> Result<(), Error> {
+    reject_tags(params, &[Tag::BlockMode, Tag::Padding, Tag::RsaOaepMgfDigest])?;
     let digest = get_digest(params)?;
     if purpose == KeyPurpose::Sign {
         let mac_len = get_tag_value!(params, MacLength, ErrorCode::MissingMacLength)?;
@@ -1348,4 +1257,69 @@ pub fn digest_len(digest: Digest) -> Result<u32, Error> {
         Digest::Sha512 => Ok(512),
         _ => Err(km_err!(IncompatibleDigest, "invalid digest {:?}", digest)),
     }
+}
+
+/// Check the required key params for an RSA wrapping key used in secure import and return the
+/// [`DecryptionMode`] constructed from the processed key characteristics.
+pub fn check_rsa_wrapping_key_params(
+    chars: &[KeyParam],
+    params: &[KeyParam],
+) -> Result<DecryptionMode, Error> {
+    // Check the purpose of the wrapping key
+    if !contains_tag_value!(chars, Purpose, KeyPurpose::WrapKey) {
+        return Err(km_err!(IncompatiblePurpose, "no wrap key purpose for the wrapping key"));
+    }
+    let padding_mode = get_tag_value!(params, Padding, ErrorCode::IncompatiblePaddingMode)?;
+    if padding_mode != PaddingMode::RsaOaep {
+        return Err(km_err!(
+            IncompatiblePaddingMode,
+            "invalid padding mode {:?} for RSA wrapping key",
+            padding_mode
+        ));
+    }
+    let msg_digest = get_tag_value!(params, Digest, ErrorCode::IncompatibleDigest)?;
+    if msg_digest != Digest::Sha256 {
+        return Err(km_err!(
+            IncompatibleDigest,
+            "invalid digest {:?} for RSA wrapping key",
+            padding_mode
+        ));
+    }
+    let opt_mgf_digest = get_opt_tag_value!(params, RsaOaepMgfDigest)?;
+    if opt_mgf_digest == Some(&Digest::None) {
+        return Err(km_err!(UnsupportedMgfDigest, "MGF digest cannot be NONE for RSA-OAEP"));
+    }
+
+    if !contains_tag_value!(chars, Padding, padding_mode) {
+        return Err(km_err!(
+            IncompatiblePaddingMode,
+            "padding mode {:?} not in key characteristics {:?}",
+            padding_mode,
+            chars,
+        ));
+    }
+    if !contains_tag_value!(chars, Digest, msg_digest) {
+        return Err(km_err!(
+            IncompatibleDigest,
+            "digest {:?} not in key characteristics {:?}",
+            msg_digest,
+            chars,
+        ));
+    }
+
+    if let Some(mgf_digest) = opt_mgf_digest {
+        // MGF digest explicitly specified, check it is in key characteristics.
+        if !contains_tag_value!(chars, RsaOaepMgfDigest, *mgf_digest) {
+            return Err(km_err!(
+                IncompatibleDigest,
+                "MGF digest {:?} not in key characteristics {:?}",
+                mgf_digest,
+                chars,
+            ));
+        }
+    }
+    let mgf_digest = opt_mgf_digest.unwrap_or(&Digest::Sha1);
+
+    let rsa_oaep_decrypt_mode = DecryptionMode::OaepPadding { msg_digest, mgf_digest: *mgf_digest };
+    Ok(rsa_oaep_decrypt_mode)
 }

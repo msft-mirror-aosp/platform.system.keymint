@@ -1,36 +1,34 @@
-//! Types and macros for communication between HAL and TA
-
-use crate::cbor_type_error;
-use crate::{
-    cbor,
-    wire::{
-        keymint::{
-            AttestationKey, DeviceInfo, ErrorCode, HardwareAuthToken, KeyCharacteristics,
-            KeyCreationResult, KeyFormat, KeyMintHardwareInfo, KeyParam, KeyPurpose,
-            MacedPublicKey, ProtectedData, RpcHardwareInfo,
-        },
-        secureclock::TimeStampToken,
-        sharedsecret::SharedSecretParameters,
-    },
-    AsCborValue, CborError,
+use crate::keymint::{
+    AttestationKey, HardwareAuthToken, KeyCharacteristics, KeyCreationResult, KeyFormat,
+    KeyMintHardwareInfo, KeyParam, KeyPurpose,
 };
+use crate::rpc;
+use crate::secureclock::TimeStampToken;
+use crate::sharedsecret::SharedSecretParameters;
+use crate::{cbor, cbor_type_error, vec_try, AsCborValue, CborError};
 use alloc::{
     format,
     string::{String, ToString},
-    vec,
     vec::Vec,
 };
 use enumn::N;
 use kmr_derive::AsCborValue;
 
-pub mod keymint;
-pub mod secureclock;
-pub mod sharedsecret;
+/// Key size in bits.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue)]
+pub struct KeySizeInBits(pub u32);
+
+/// RSA exponent.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue)]
+pub struct RsaExponent(pub u64);
 
 /// Maximum supported size for CBOR-serialized messages.
 pub const MAX_SIZE: usize = 4096;
 
 /// Marker type indicating failure to convert into an `enum` variant.
+#[derive(Debug)]
 pub struct ValueNotRecognized;
 
 /// Trait that associates an enum value of the specified type with a type.
@@ -252,7 +250,7 @@ pub struct AbortResponse {}
 pub struct GetRpcHardwareInfoRequest {}
 #[derive(Debug, AsCborValue)]
 pub struct GetRpcHardwareInfoResponse {
-    pub ret: RpcHardwareInfo,
+    pub ret: rpc::HardwareInfo,
 }
 #[derive(Debug, AsCborValue)]
 pub struct GenerateEcdsaP256KeyPairRequest {
@@ -260,20 +258,29 @@ pub struct GenerateEcdsaP256KeyPairRequest {
 }
 #[derive(Debug, AsCborValue)]
 pub struct GenerateEcdsaP256KeyPairResponse {
-    pub maced_public_key: MacedPublicKey,
+    pub maced_public_key: rpc::MacedPublicKey,
     pub ret: Vec<u8>,
 }
 #[derive(Debug, AsCborValue)]
 pub struct GenerateCertificateRequestRequest {
     pub test_mode: bool,
-    pub keys_to_sign: Vec<MacedPublicKey>,
+    pub keys_to_sign: Vec<rpc::MacedPublicKey>,
     pub endpoint_encryption_cert_chain: Vec<u8>,
     pub challenge: Vec<u8>,
 }
 #[derive(Debug, AsCborValue)]
 pub struct GenerateCertificateRequestResponse {
-    pub device_info: DeviceInfo,
-    pub protected_data: ProtectedData,
+    pub device_info: rpc::DeviceInfo,
+    pub protected_data: rpc::ProtectedData,
+    pub ret: Vec<u8>,
+}
+#[derive(Debug, AsCborValue)]
+pub struct GenerateCertificateRequestV2Request {
+    pub keys_to_sign: Vec<rpc::MacedPublicKey>,
+    pub challenge: Vec<u8>,
+}
+#[derive(Debug, AsCborValue)]
+pub struct GenerateCertificateRequestV2Response {
     pub ret: Vec<u8>,
 }
 
@@ -329,7 +336,7 @@ pub struct SetBootInfoRequest {
 pub struct SetBootInfoResponse {}
 
 /// Attestation ID information.
-#[derive(Clone, Debug, AsCborValue)]
+#[derive(Clone, Debug, AsCborValue, PartialEq, Eq)]
 pub struct AttestationIdInfo {
     // The following fields are byte vectors that typically hold UTF-8 string data.
     pub brand: Vec<u8>,
@@ -350,15 +357,15 @@ pub struct SetAttestationIdsRequest {
 #[derive(Debug, AsCborValue)]
 pub struct SetAttestationIdsResponse {}
 
-// Result of an operation, as an error code and a response message (only present for
-// `ErrorCode::OK`).
+// Result of an operation, as an error code and a response message (only present when
+// `error_code` is zero).
 #[derive(Debug, AsCborValue)]
 pub struct PerformOpResponse {
-    pub error_code: ErrorCode,
+    pub error_code: i32,
     pub rsp: Option<PerformOpRsp>,
 }
 
-/// Declare a collection of related enums for an code and a pair of types.
+/// Declare a collection of related enums for a code and a pair of types.
 ///
 /// An invocation like:
 /// ```ignore
@@ -486,10 +493,12 @@ macro_rules! declare_req_rsp_enums {
             }
             fn to_cbor_value(self) -> Result<cbor::value::Value, CborError> {
                 Ok(cbor::value::Value::Array(match self {
-                    $( Self::$cname(val) => vec![
-                        $cenum::$cname.to_cbor_value()?,
-                        val.to_cbor_value()?
-                    ], )*
+                    $( Self::$cname(val) => {
+                        vec_try![
+                            $cenum::$cname.to_cbor_value()?,
+                            val.to_cbor_value()?
+                        ]?
+                    }, )*
                 }))
             }
 
@@ -522,10 +531,12 @@ macro_rules! declare_req_rsp_enums {
             }
             fn to_cbor_value(self) -> Result<cbor::value::Value, CborError> {
                 Ok(cbor::value::Value::Array(match self {
-                    $( Self::$cname(val) => vec![
-                        $cenum::$cname.to_cbor_value()?,
-                        val.to_cbor_value()?
-                    ], )*
+                    $( Self::$cname(val) => {
+                        vec_try![
+                            $cenum::$cname.to_cbor_value()?,
+                            val.to_cbor_value()?
+                        ]?
+                    }, )*
                 }))
             }
 
@@ -581,6 +592,7 @@ declare_req_rsp_enums! { KeyMintOperation  =>    (PerformOpReq, PerformOpRsp) {
     RpcGetHardwareInfo = 0x41 =>                       (GetRpcHardwareInfoRequest, GetRpcHardwareInfoResponse),
     RpcGenerateEcdsaP256KeyPair = 0x42 =>              (GenerateEcdsaP256KeyPairRequest, GenerateEcdsaP256KeyPairResponse),
     RpcGenerateCertificateRequest = 0x43 =>            (GenerateCertificateRequestRequest, GenerateCertificateRequestResponse),
+    RpcGenerateCertificateV2Request = 0x44 =>          (GenerateCertificateRequestV2Request, GenerateCertificateRequestV2Response),
     SharedSecretGetSharedSecretParameters = 0x51 =>    (GetSharedSecretParametersRequest, GetSharedSecretParametersResponse),
     SharedSecretComputeSharedSecret = 0x52 =>          (ComputeSharedSecretRequest, ComputeSharedSecretResponse),
     SecureClockGenerateTimeStamp = 0x61 =>             (GenerateTimeStampRequest, GenerateTimeStampResponse),
@@ -591,3 +603,14 @@ declare_req_rsp_enums! { KeyMintOperation  =>    (PerformOpReq, PerformOpRsp) {
     SetBootInfo = 0x82 =>                              (SetBootInfoRequest, SetBootInfoResponse),
     SetAttestationIds = 0x83 =>                        (SetAttestationIdsRequest, SetAttestationIdsResponse),
 } }
+
+/// Indicate whether an operation is part of the `IRemotelyProvisionedComponent` HAL.
+pub fn is_rpc_operation(code: KeyMintOperation) -> bool {
+    matches!(
+        code,
+        KeyMintOperation::RpcGetHardwareInfo
+            | KeyMintOperation::RpcGenerateEcdsaP256KeyPair
+            | KeyMintOperation::RpcGenerateCertificateRequest
+            | KeyMintOperation::RpcGenerateCertificateV2Request
+    )
+}

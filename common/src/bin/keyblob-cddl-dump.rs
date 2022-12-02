@@ -1,5 +1,5 @@
-use kmr_common::wire::keymint;
 use kmr_common::{crypto, keyblob};
+use kmr_wire::keymint;
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -12,7 +12,7 @@ struct AccumulatedSchema {
 
 impl AccumulatedSchema {
     /// Add a new type to the accumulated schema, along with a sample instance of the type.
-    fn add<T: kmr_common::AsCborValue>(&mut self, sample: T) {
+    fn add<T: kmr_wire::AsCborValue>(&mut self, sample: T) {
         if let (Some(name), Some(schema)) = (<T>::cddl_typename(), <T>::cddl_schema()) {
             self.add_name_schema(&name, &schema);
             self.samples.insert(name, sample.into_vec().unwrap());
@@ -54,6 +54,7 @@ fn main() {
     schema.add(keyblob::EncryptedKeyBlob::V1(keyblob::EncryptedKeyBlobV1 {
         characteristics: vec![],
         key_derivation_input: [0u8; 32],
+        kek_context: vec![],
         encrypted_key_material: coset::CoseEncrypt0Builder::new()
             .protected(
                 coset::HeaderBuilder::new().algorithm(coset::iana::Algorithm::A256GCM).build(),
@@ -66,6 +67,7 @@ fn main() {
     schema.add(keyblob::EncryptedKeyBlobV1 {
         characteristics: vec![],
         key_derivation_input: [0u8; 32],
+        kek_context: vec![],
         encrypted_key_material: coset::CoseEncrypt0Builder::new()
             .protected(
                 coset::HeaderBuilder::new().algorithm(coset::iana::Algorithm::A256GCM).build(),
@@ -84,7 +86,7 @@ fn main() {
         "[ protected: bstr, unprotected: { * (int / tstr) => any }, ciphertext: bstr / nil ]",
     );
 
-    schema.add(crypto::PlaintextKeyMaterial::Aes(crypto::aes::Key::Aes128([0u8; 16])));
+    schema.add(crypto::KeyMaterial::Aes(crypto::aes::Key::Aes128([0u8; 16]).into()));
     schema.add(keyblob::SecureDeletionSlot(1));
     schema.add(keyblob::SecureDeletionData {
         factory_reset_secret: [0; 32],
@@ -115,13 +117,13 @@ fn main() {
     schema.add(keymint::PaddingMode::None);
 
     schema.add(keymint::DateTime { ms_since_epoch: 22_593_600_000 });
-    schema.add(crypto::KeySizeInBits(256));
-    schema.add(crypto::rsa::Exponent(65537));
+    schema.add(kmr_wire::KeySizeInBits(256));
+    schema.add(kmr_wire::RsaExponent(65537));
 
     println!(
    "; encrypted_key_material is AES-GCM encrypted with:\n\
     ; - key derived as described below\n\
-    ; - plaintext is the CBOR-serialization of `PlaintextKeyMaterial`\n\
+    ; - plaintext is the CBOR-serialization of `KeyMaterial`\n\
     ; - nonce value is fixed, all zeroes\n\
     ; - no additional data\n\
     ;\n\
@@ -129,14 +131,17 @@ fn main() {
     ; - input keying material = a root key held in hardware\n\
     ; - salt = absent\n\
     ; - info = the following three or four chunks of context data concatenated:\n\
-    ;    - content of `EncryptedKeyMaterial.key_derivation_input` (a random nonce)\n\
+    ;    - content of `EncryptedKeyBlob.key_derivation_input` (a random nonce)\n\
     ;    - CBOR-serialization of `EncryptedKeyBlob.characteristics`\n\
     ;    - CBOR-serialized array of additional hidden `KeyParam` items associated with the key, specifically:\n\
     ;        - [Tag_ApplicationId, bstr] if required\n\
     ;        - [Tag_ApplicationData, bstr] if required\n\
     ;        - [Tag_RootOfTrust, bstr .cbor RootOfTrustInfo]\n\
-    ;    - (if `EncryptedKeyBlob.secure_deletion_slot` is non-empty) CBOR serialization of the `SecureDeletionData`\n\
-    ;      structure (held in secure storage) that is associated with the slot",
+    ;    - (if secure storage is available) CBOR serialization of the `SecureDeletionData` structure, with:\n\
+    ;        - `factory_reset_secret` always populated\n\
+    ;        - `secure_deletion_secret` populated with:\n\
+    ;           - all zeroes (if `EncryptedKeyBlob.secure_deletion_slot` is empty)\n\
+    ;           - the contents of the slot (if `EncryptedKeyBlob.secure_deletion_slot` is non-empty)",
     );
     println!("{}", schema);
     schema.check();

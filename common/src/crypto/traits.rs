@@ -1,19 +1,15 @@
 //! Traits representing abstractions of cryptographic functionality.
-
 use super::*;
-use crate::wire::keymint::{Digest, EcCurve};
-use crate::{keyblob, Error};
-use alloc::{boxed::Box, vec, vec::Vec};
+use crate::{crypto::ec::Key, explicit, keyblob, vec_try, Error};
+use alloc::{boxed::Box, vec::Vec};
+use der::Decode;
+use kmr_wire::{keymint, keymint::Digest, KeySizeInBits, RsaExponent};
 use log::{error, warn};
 
 /// Combined collection of trait implementations that must be provided.
 pub struct Implementation<'a> {
     /// Random number generator.
     pub rng: &'a mut dyn Rng,
-
-    /// Secure deletion secret manager.  If not available, rollback-resistant
-    /// keys will not be supported.
-    pub sdd_mgr: Option<&'a mut dyn keyblob::SecureDeletionSecretManager>,
 
     /// A local clock, if available. If not available, KeyMint will require timestamp tokens to
     /// be provided by an external `ISecureClock` (with which it shares a common key).
@@ -82,36 +78,44 @@ pub trait MonotonicClock {
 
 /// Abstraction of AES functionality.
 pub trait Aes {
-    /// Generate an AES key.  The default implementation fills with random data.
+    /// Generate an AES key.  The default implementation fills with random data.  Key generation
+    /// parameters are passed in for reference, to allow for implementations that might have
+    /// parameter-specific behaviour.
     fn generate_key(
         &self,
         rng: &mut dyn Rng,
         variant: aes::Variant,
-    ) -> Result<PlaintextKeyMaterial, Error> {
+        _params: &[keymint::KeyParam],
+    ) -> Result<KeyMaterial, Error> {
         Ok(match variant {
             aes::Variant::Aes128 => {
                 let mut key = [0; 16];
                 rng.fill_bytes(&mut key[..]);
-                PlaintextKeyMaterial::Aes(aes::Key::Aes128(key))
+                KeyMaterial::Aes(aes::Key::Aes128(key).into())
             }
             aes::Variant::Aes192 => {
                 let mut key = [0; 24];
                 rng.fill_bytes(&mut key[..]);
-                PlaintextKeyMaterial::Aes(aes::Key::Aes192(key))
+                KeyMaterial::Aes(aes::Key::Aes192(key).into())
             }
             aes::Variant::Aes256 => {
                 let mut key = [0; 32];
                 rng.fill_bytes(&mut key[..]);
-                PlaintextKeyMaterial::Aes(aes::Key::Aes256(key))
+                KeyMaterial::Aes(aes::Key::Aes256(key).into())
             }
         })
     }
 
-    /// Import an AES key, also returning the key size in bits.
-    fn import_key(&self, data: &[u8]) -> Result<(PlaintextKeyMaterial, KeySizeInBits), Error> {
+    /// Import an AES key, also returning the key size in bits.  Key import parameters are passed in
+    /// for reference, to allow for implementations that might have parameter-specific behaviour.
+    fn import_key(
+        &self,
+        data: &[u8],
+        _params: &[keymint::KeyParam],
+    ) -> Result<(KeyMaterial, KeySizeInBits), Error> {
         let aes_key = aes::Key::new_from(data)?;
         let key_size = aes_key.size();
-        Ok((PlaintextKeyMaterial::Aes(aes_key), key_size))
+        Ok((KeyMaterial::Aes(aes_key.into()), key_size))
     }
 
     /// Create an AES operation.  For block mode operations with no padding
@@ -120,7 +124,7 @@ pub trait Aes {
     /// not end up being a multiple of the block size.
     fn begin(
         &self,
-        key: aes::Key,
+        key: OpaqueOr<aes::Key>,
         mode: aes::CipherMode,
         dir: SymmetricOperation,
     ) -> Result<Box<dyn EmittingOperation>, Error>;
@@ -128,7 +132,7 @@ pub trait Aes {
     /// Create an AES-GCM operation.
     fn begin_aead(
         &self,
-        key: aes::Key,
+        key: OpaqueOr<aes::Key>,
         mode: aes::GcmMode,
         dir: SymmetricOperation,
     ) -> Result<Box<dyn AadOperation>, Error>;
@@ -136,18 +140,24 @@ pub trait Aes {
 
 /// Abstraction of 3-DES functionality.
 pub trait Des {
-    /// Generate a triple DES key.
-    fn generate_key(&self, rng: &mut dyn Rng) -> Result<PlaintextKeyMaterial, Error> {
-        let mut key = vec![0; 24];
+    /// Generate a triple DES key. Key generation parameters are passed in for reference, to allow
+    /// for implementations that might have parameter-specific behaviour.
+    fn generate_key(
+        &self,
+        rng: &mut dyn Rng,
+        _params: &[keymint::KeyParam],
+    ) -> Result<KeyMaterial, Error> {
+        let mut key = vec_try![0; 24]?;
         // Note: parity bits must be ignored.
         rng.fill_bytes(&mut key[..]);
-        Ok(PlaintextKeyMaterial::TripleDes(des::Key::new(key)?))
+        Ok(KeyMaterial::TripleDes(des::Key::new(key)?.into()))
     }
 
-    /// Import a triple DES key.
-    fn import_key(&self, data: &[u8]) -> Result<PlaintextKeyMaterial, Error> {
+    /// Import a triple DES key. Key import parameters are passed in for reference, to allow for
+    /// implementations that might have parameter-specific behaviour.
+    fn import_key(&self, data: &[u8], _params: &[keymint::KeyParam]) -> Result<KeyMaterial, Error> {
         let des_key = des::Key::new_from(data)?;
-        Ok(PlaintextKeyMaterial::TripleDes(des_key))
+        Ok(KeyMaterial::TripleDes(des_key.into()))
     }
 
     /// Create a DES operation.  For block mode operations with no padding
@@ -156,7 +166,7 @@ pub trait Des {
     /// a multiple of the block size.
     fn begin(
         &self,
-        key: des::Key,
+        key: OpaqueOr<des::Key>,
         mode: des::Mode,
         dir: SymmetricOperation,
     ) -> Result<Box<dyn EmittingOperation>, Error>;
@@ -164,26 +174,33 @@ pub trait Des {
 
 /// Abstraction of HMAC functionality.
 pub trait Hmac {
-    /// Generate an HMAC key.
+    /// Generate an HMAC key. Key generation parameters are passed in for reference, to allow for
+    /// implementations that might have parameter-specific behaviour.
     fn generate_key(
         &self,
         rng: &mut dyn Rng,
         key_size: KeySizeInBits,
-    ) -> Result<PlaintextKeyMaterial, Error> {
+        _params: &[keymint::KeyParam],
+    ) -> Result<KeyMaterial, Error> {
         hmac::valid_hal_size(key_size)?;
 
-        let key_len = key_size.0 / 8;
-        let mut key = vec![0; key_len as usize];
+        let key_len = (key_size.0 / 8) as usize;
+        let mut key = vec_try![0; key_len]?;
         rng.fill_bytes(&mut key);
-        Ok(PlaintextKeyMaterial::Hmac(hmac::Key::new(key)))
+        Ok(KeyMaterial::Hmac(hmac::Key::new(key).into()))
     }
 
-    /// Import an HMAC key, also returning the key size in bits.
-    fn import_key(&self, data: &[u8]) -> Result<(PlaintextKeyMaterial, KeySizeInBits), Error> {
-        let hmac_key = hmac::Key::new_from(data);
+    /// Import an HMAC key, also returning the key size in bits. Key import parameters are passed in
+    /// for reference, to allow for implementations that might have parameter-specific behaviour.
+    fn import_key(
+        &self,
+        data: &[u8],
+        _params: &[keymint::KeyParam],
+    ) -> Result<(KeyMaterial, KeySizeInBits), Error> {
+        let hmac_key = hmac::Key::new_from(data)?;
         let key_size = hmac_key.size();
         hmac::valid_hal_size(key_size)?;
-        Ok((PlaintextKeyMaterial::Hmac(hmac_key), key_size))
+        Ok((KeyMaterial::Hmac(hmac_key.into()), key_size))
     }
 
     /// Create an HMAC operation. Implementations can assume that:
@@ -191,7 +208,7 @@ pub trait Hmac {
     /// - `digest` will not be [`Digest::None`]
     fn begin(
         &self,
-        key: hmac::Key,
+        key: OpaqueOr<hmac::Key>,
         digest: Digest,
     ) -> Result<Box<dyn AccumulatingOperation>, Error>;
 }
@@ -201,79 +218,152 @@ pub trait Hmac {
 pub trait AesCmac {
     /// Create an AES-CMAC operation. Implementations can assume that `key` will have length
     /// of either 16 (AES-128) or 32 (AES-256).
-    fn begin(&self, key: aes::Key) -> Result<Box<dyn AccumulatingOperation>, Error>;
+    fn begin(&self, key: OpaqueOr<aes::Key>) -> Result<Box<dyn AccumulatingOperation>, Error>;
 }
 
 /// Abstraction of RSA functionality.
 pub trait Rsa {
-    /// Generate an RSA key.
+    /// Generate an RSA key. Key generation parameters are passed in for reference, to allow for
+    /// implementations that might have parameter-specific behaviour.
     fn generate_key(
         &self,
         rng: &mut dyn Rng,
         key_size: KeySizeInBits,
-        pub_exponent: rsa::Exponent,
-    ) -> Result<PlaintextKeyMaterial, Error>;
+        pub_exponent: RsaExponent,
+        params: &[keymint::KeyParam],
+    ) -> Result<KeyMaterial, Error>;
 
     /// Import an RSA key in PKCS#8 format, also returning the key size in bits and public exponent.
+    /// Key import parameters are passed in for reference, to allow for implementations that might
+    /// have parameter-specific behaviour.
     fn import_pkcs8_key(
         &self,
         data: &[u8],
-    ) -> Result<(PlaintextKeyMaterial, KeySizeInBits, rsa::Exponent), Error>;
+        _params: &[keymint::KeyParam],
+    ) -> Result<(KeyMaterial, KeySizeInBits, RsaExponent), Error> {
+        rsa::import_pkcs8_key(data)
+    }
+
+    /// Return the public key data corresponds to the provided private `key`,
+    /// as an ASN.1 DER-encoded `SEQUENCE` as per RFC 3279 section 2.3.1:
+    ///     ```asn1
+    ///     RSAPublicKey ::= SEQUENCE {
+    ///        modulus            INTEGER,    -- n
+    ///        publicExponent     INTEGER  }  -- e
+    ///     ```
+    /// which is the `subjectPublicKey` to be included in `SubjectPublicKeyInfo`.
+    fn subject_public_key(&self, key: &OpaqueOr<rsa::Key>) -> Result<Vec<u8>, Error> {
+        // The default implementation only handles the `Explicit<rsa::Key>` variant.
+        let rsa_key = explicit!(key)?;
+        rsa_key.subject_public_key()
+    }
 
     /// Create an RSA decryption operation.
     fn begin_decrypt(
         &self,
-        key: rsa::Key,
+        key: OpaqueOr<rsa::Key>,
         mode: rsa::DecryptionMode,
     ) -> Result<Box<dyn AccumulatingOperation>, Error>;
 
     /// Create an RSA signing operation.  For [`rsa::SignMode::Pkcs1_1_5Padding(Digest::None)`] the
-    /// implementation should reject (with [`ErrorCode::InvalidInputLength`]) accumulated input
-    /// that is larger than the size of the RSA key less overhead
+    /// implementation should reject (with [`ErrorCode::InvalidInputLength`]) accumulated input that
+    /// is larger than the size of the RSA key less overhead
     /// ([`rsa::PKCS1_UNDIGESTED_SIGNATURE_PADDING_OVERHEAD`]).
     fn begin_sign(
         &self,
-        key: rsa::Key,
+        key: OpaqueOr<rsa::Key>,
         mode: rsa::SignMode,
     ) -> Result<Box<dyn AccumulatingOperation>, Error>;
 }
 
 /// Abstraction of EC functionality.
 pub trait Ec {
-    /// Generate an EC key for a NIST curve.
+    /// Generate an EC key for a NIST curve.  Key generation parameters are passed in for reference,
+    /// to allow for implementations that might have parameter-specific behaviour.
     fn generate_nist_key(
         &self,
         rng: &mut dyn Rng,
         curve: ec::NistCurve,
-    ) -> Result<PlaintextKeyMaterial, Error>;
+        params: &[keymint::KeyParam],
+    ) -> Result<KeyMaterial, Error>;
 
-    /// Generate an Ed25519 key.
-    fn generate_ed25519_key(&self, rng: &mut dyn Rng) -> Result<PlaintextKeyMaterial, Error>;
+    /// Generate an Ed25519 key.  Key generation parameters are passed in for reference, to allow
+    /// for implementations that might have parameter-specific behaviour.
+    fn generate_ed25519_key(
+        &self,
+        rng: &mut dyn Rng,
+        params: &[keymint::KeyParam],
+    ) -> Result<KeyMaterial, Error>;
 
-    /// Generate an X25519 key.
-    fn generate_x25519_key(&self, rng: &mut dyn Rng) -> Result<PlaintextKeyMaterial, Error>;
+    /// Generate an X25519 key.  Key generation parameters are passed in for reference, to allow for
+    /// implementations that might have parameter-specific behaviour.
+    fn generate_x25519_key(
+        &self,
+        rng: &mut dyn Rng,
+        params: &[keymint::KeyParam],
+    ) -> Result<KeyMaterial, Error>;
 
-    /// Import an EC key of known curve in PKCS#8 format.
-    fn import_pkcs8_key(&self, curve: EcCurve, data: &[u8]) -> Result<PlaintextKeyMaterial, Error>;
-
-    /// Import a 32-byte raw Ed25519 key.
-    fn import_raw_ed25519_key(&self, data: &[u8]) -> Result<PlaintextKeyMaterial, Error> {
-        let key = data.try_into().map_err(|_e| {
-            km_err!(InvalidInputLength, "import Ed25519 key of incorrect len {}", data.len())
-        })?;
-        Ok(PlaintextKeyMaterial::Ec(EcCurve::Curve25519, ec::Key::Ed25519(ec::Ed25519Key(key))))
+    /// Import an EC key in PKCS#8 format.  Key import parameters are passed in for reference, to
+    /// allow for implementations that might have parameter-specific behaviour.
+    fn import_pkcs8_key(
+        &self,
+        data: &[u8],
+        _params: &[keymint::KeyParam],
+    ) -> Result<KeyMaterial, Error> {
+        ec::import_pkcs8_key(data)
     }
 
-    /// Import a 32-byte raw X25519 key.
-    fn import_raw_x25519_key(&self, data: &[u8]) -> Result<PlaintextKeyMaterial, Error> {
-        let key = data.try_into().map_err(|_e| {
-            km_err!(InvalidInputLength, "import X25519 key of incorrect len {}", data.len())
-        })?;
-        Ok(PlaintextKeyMaterial::Ec(EcCurve::Curve25519, ec::Key::X25519(ec::X25519Key(key))))
+    /// Import a 32-byte raw Ed25519 key.  Key import parameters are passed in for reference, to
+    /// allow for implementations that might have parameter-specific behaviour.
+    fn import_raw_ed25519_key(
+        &self,
+        data: &[u8],
+        _params: &[keymint::KeyParam],
+    ) -> Result<KeyMaterial, Error> {
+        ec::import_raw_ed25519_key(data)
+    }
+
+    /// Import a 32-byte raw X25519 key.  Key import parameters are passed in for reference, to
+    /// allow for implementations that might have parameter-specific behaviour.
+    fn import_raw_x25519_key(
+        &self,
+        data: &[u8],
+        _params: &[keymint::KeyParam],
+    ) -> Result<KeyMaterial, Error> {
+        ec::import_raw_x25519_key(data)
+    }
+
+    /// Return the public key data that corresponds to the provided private `key`.
+    /// If `CurveType` of the key is `CurveType::Nist`, return the public key data
+    /// as a SEC-1 encoded uncompressed point as described in RFC 5480 section 2.1.
+    /// I.e. 0x04: uncompressed, followed by x || y coordinates.
+    ///
+    /// For other two curve types, return the raw public key data.
+    fn subject_public_key(&self, key: &OpaqueOr<ec::Key>) -> Result<Vec<u8>, Error> {
+        // The default implementation only handles the `Explicit<ec::Key>` variant.
+        let ec_key = explicit!(key)?;
+        match ec_key {
+            Key::P224(nist_key)
+            | Key::P256(nist_key)
+            | Key::P384(nist_key)
+            | Key::P521(nist_key) => {
+                let ec_pvt_key = sec1::EcPrivateKey::from_der(nist_key.0.as_slice())?;
+                match ec_pvt_key.public_key {
+                    Some(pub_key) => Ok(pub_key.to_vec()),
+                    None => {
+                        // Key structure doesn't include optional public key, so regenerate it.
+                        let nist_curve: ec::NistCurve = ec_key.curve().try_into()?;
+                        Ok(self.nist_public_key(nist_key, nist_curve)?)
+                    }
+                }
+            }
+            Key::Ed25519(ed25519_key) => self.ed25519_public_key(ed25519_key),
+            Key::X25519(x25519_key) => self.x25519_public_key(x25519_key),
+        }
     }
 
     /// Return the public key data that corresponds to the provided private `key`, as a SEC-1
-    /// encoded point.
+    /// encoded uncompressed point.
     fn nist_public_key(&self, key: &ec::NistKey, curve: ec::NistCurve) -> Result<Vec<u8>, Error>;
 
     /// Return the raw public key data that corresponds to the provided private `key`.
@@ -282,16 +372,17 @@ pub trait Ec {
     /// Return the raw public key data that corresponds to the provided private `key`.
     fn x25519_public_key(&self, key: &ec::X25519Key) -> Result<Vec<u8>, Error>;
 
-    /// Create an EC key agreement operation.  The accumulated input for the operation is expected
-    /// to be the peer's public key, provided as an ASN.1 DER-encoded `SubjectPublicKeyInfo`.
-    fn begin_agree(&self, key: ec::Key) -> Result<Box<dyn AccumulatingOperation>, Error>;
+    /// Create an EC key agreement operation.
+    /// The accumulated input for the operation is expected to be the peer's
+    /// public key, provided as an ASN.1 DER-encoded `SubjectPublicKeyInfo`.
+    fn begin_agree(&self, key: OpaqueOr<ec::Key>) -> Result<Box<dyn AccumulatingOperation>, Error>;
 
     /// Create an EC signing operation.  For Ed25519 signing operations, the implementation should
     /// reject (with [`ErrorCode::InvalidInputLength`]) accumulated data that is larger than
     /// [`ec::MAX_ED25519_MSG_SIZE`].
     fn begin_sign(
         &self,
-        key: ec::Key,
+        key: OpaqueOr<ec::Key>,
         digest: Digest,
     ) -> Result<Box<dyn AccumulatingOperation>, Error>;
 }
@@ -314,6 +405,11 @@ pub trait AadOperation: EmittingOperation {
 
 /// Abstraction of an in-progress operation that only emits data when it completes.
 pub trait AccumulatingOperation {
+    /// Maximum size of accumulated input.
+    fn max_input_size(&self) -> Option<usize> {
+        None
+    }
+
     /// Update operation with data.
     fn update(&mut self, data: &[u8]) -> Result<(), Error>;
 
@@ -337,7 +433,7 @@ pub trait Hkdf {
 pub trait Ckdf {
     fn ckdf(
         &self,
-        key: &aes::Key,
+        key: &OpaqueOr<aes::Key>,
         label: &[u8],
         chunks: &[&[u8]],
         out_len: usize,
@@ -345,47 +441,27 @@ pub trait Ckdf {
 }
 
 ////////////////////////////////////////////////////////////
-// No-op implementations of traits for testing.
-// TODO: remove these
-
-/// Return the type name for a type.  Only suitable for debug output.
-fn type_name_of<T>(_: T) -> &'static str {
-    core::any::type_name::<T>()
-}
-
-/// Macro to emit the name of the current function.
-macro_rules! function {
-    () => {{
-        // Add an inner function `f` to the current block.
-        fn f() {}
-        // Retrieve the type name of the added inner function,
-        // something like `kmr::SomeType::a_method::f`.
-        let name = type_name_of(f);
-        // Lop off the trailing `::f`.
-        &name[..name.len() - 3]
-    }};
-}
+// No-op implementations of traits. These implementations are
+// only intended for convenience during the process of porting
+// the KeyMint code to a new environment.
 
 /// Macro to emit an error log indicating that an unimplemented function
 /// has been invoked (and where it is).
+#[macro_export]
 macro_rules! log_unimpl {
     () => {
-        error!(
-            "{}:{}: Unimplemented placeholder KeyMint trait method {} invoked!",
-            file!(),
-            line!(),
-            function!()
-        );
+        error!("{}:{}: Unimplemented placeholder KeyMint trait method invoked!", file!(), line!(),);
     };
 }
 
 /// Mark a method as unimplemented (log error, return `ErrorCode::Unimplemented`)
+#[macro_export]
 macro_rules! unimpl {
     () => {
         log_unimpl!();
         return Err(Error::Hal(
-            crate::wire::keymint::ErrorCode::Unimplemented,
-            alloc::format!("{}:{}: method {} unimplemented", file!(), line!(), function!()),
+            kmr_wire::keymint::ErrorCode::Unimplemented,
+            alloc::format!("{}:{}: method unimplemented", file!(), line!()),
         ));
     };
 }
@@ -421,7 +497,7 @@ pub struct NoOpAes;
 impl Aes for NoOpAes {
     fn begin(
         &self,
-        _key: aes::Key,
+        _key: OpaqueOr<aes::Key>,
         _mode: aes::CipherMode,
         _dir: SymmetricOperation,
     ) -> Result<Box<dyn EmittingOperation>, Error> {
@@ -429,7 +505,7 @@ impl Aes for NoOpAes {
     }
     fn begin_aead(
         &self,
-        _key: aes::Key,
+        _key: OpaqueOr<aes::Key>,
         _mode: aes::GcmMode,
         _dir: SymmetricOperation,
     ) -> Result<Box<dyn AadOperation>, Error> {
@@ -441,7 +517,7 @@ pub struct NoOpDes;
 impl Des for NoOpDes {
     fn begin(
         &self,
-        _key: des::Key,
+        _key: OpaqueOr<des::Key>,
         _mode: des::Mode,
         _dir: SymmetricOperation,
     ) -> Result<Box<dyn EmittingOperation>, Error> {
@@ -453,7 +529,7 @@ pub struct NoOpHmac;
 impl Hmac for NoOpHmac {
     fn begin(
         &self,
-        _key: hmac::Key,
+        _key: OpaqueOr<hmac::Key>,
         _digest: Digest,
     ) -> Result<Box<dyn AccumulatingOperation>, Error> {
         unimpl!();
@@ -462,7 +538,7 @@ impl Hmac for NoOpHmac {
 
 pub struct NoOpAesCmac;
 impl AesCmac for NoOpAesCmac {
-    fn begin(&self, _key: aes::Key) -> Result<Box<dyn AccumulatingOperation>, Error> {
+    fn begin(&self, _key: OpaqueOr<aes::Key>) -> Result<Box<dyn AccumulatingOperation>, Error> {
         unimpl!();
     }
 }
@@ -473,21 +549,15 @@ impl Rsa for NoOpRsa {
         &self,
         _rng: &mut dyn Rng,
         _key_size: KeySizeInBits,
-        _pub_exponent: rsa::Exponent,
-    ) -> Result<PlaintextKeyMaterial, Error> {
-        unimpl!();
-    }
-
-    fn import_pkcs8_key(
-        &self,
-        _data: &[u8],
-    ) -> Result<(PlaintextKeyMaterial, KeySizeInBits, rsa::Exponent), Error> {
+        _pub_exponent: RsaExponent,
+        _params: &[keymint::KeyParam],
+    ) -> Result<KeyMaterial, Error> {
         unimpl!();
     }
 
     fn begin_decrypt(
         &self,
-        _key: rsa::Key,
+        _key: OpaqueOr<rsa::Key>,
         _mode: rsa::DecryptionMode,
     ) -> Result<Box<dyn AccumulatingOperation>, Error> {
         unimpl!();
@@ -495,7 +565,7 @@ impl Rsa for NoOpRsa {
 
     fn begin_sign(
         &self,
-        _key: rsa::Key,
+        _key: OpaqueOr<rsa::Key>,
         _mode: rsa::SignMode,
     ) -> Result<Box<dyn AccumulatingOperation>, Error> {
         unimpl!();
@@ -508,23 +578,24 @@ impl Ec for NoOpEc {
         &self,
         _rng: &mut dyn Rng,
         _curve: ec::NistCurve,
-    ) -> Result<PlaintextKeyMaterial, Error> {
+        _params: &[keymint::KeyParam],
+    ) -> Result<KeyMaterial, Error> {
         unimpl!();
     }
 
-    fn generate_ed25519_key(&self, _rng: &mut dyn Rng) -> Result<PlaintextKeyMaterial, Error> {
-        unimpl!();
-    }
-
-    fn generate_x25519_key(&self, _rng: &mut dyn Rng) -> Result<PlaintextKeyMaterial, Error> {
-        unimpl!();
-    }
-
-    fn import_pkcs8_key(
+    fn generate_ed25519_key(
         &self,
-        _curve: EcCurve,
-        _data: &[u8],
-    ) -> Result<PlaintextKeyMaterial, Error> {
+        _rng: &mut dyn Rng,
+        _params: &[keymint::KeyParam],
+    ) -> Result<KeyMaterial, Error> {
+        unimpl!();
+    }
+
+    fn generate_x25519_key(
+        &self,
+        _rng: &mut dyn Rng,
+        _params: &[keymint::KeyParam],
+    ) -> Result<KeyMaterial, Error> {
         unimpl!();
     }
 
@@ -540,13 +611,16 @@ impl Ec for NoOpEc {
         unimpl!();
     }
 
-    fn begin_agree(&self, _key: ec::Key) -> Result<Box<dyn AccumulatingOperation>, Error> {
+    fn begin_agree(
+        &self,
+        _key: OpaqueOr<ec::Key>,
+    ) -> Result<Box<dyn AccumulatingOperation>, Error> {
         unimpl!();
     }
 
     fn begin_sign(
         &self,
-        _key: ec::Key,
+        _key: OpaqueOr<ec::Key>,
         _digest: Digest,
     ) -> Result<Box<dyn AccumulatingOperation>, Error> {
         unimpl!();
@@ -555,9 +629,21 @@ impl Ec for NoOpEc {
 
 pub struct NoOpSdsManager;
 impl keyblob::SecureDeletionSecretManager for NoOpSdsManager {
+    fn get_or_create_factory_reset_secret(
+        &mut self,
+        _rng: &mut dyn Rng,
+    ) -> Result<keyblob::SecureDeletionData, Error> {
+        unimpl!();
+    }
+
+    fn get_factory_reset_secret(&self) -> Result<keyblob::SecureDeletionData, Error> {
+        unimpl!();
+    }
+
     fn new_secret(
         &mut self,
         _rng: &mut dyn Rng,
+        _purpose: keyblob::SlotPurpose,
     ) -> Result<(keyblob::SecureDeletionSlot, keyblob::SecureDeletionData), Error> {
         unimpl!();
     }

@@ -12,13 +12,14 @@
 //! - `KeyParam` is a Rust `enum` that is used in place of the `KeyParameter` struct, meaning...
 //! - `KeyParameterValue` is not included here.
 
-use crate::{cbor, cbor_type_error, crypto, AsCborValue, CborError};
+use crate::{
+    cbor, cbor_type_error, try_from_n, vec_try, AsCborValue, CborError, KeySizeInBits, RsaExponent,
+};
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::{vec, vec::Vec};
-use core::mem::size_of;
+use alloc::vec::Vec;
 use enumn::N;
-use kmr_derive::AsCborValue;
+use kmr_derive::{AsCborValue, FromRawTag};
 
 /// Default certificate serial number of 1.
 pub const DEFAULT_CERT_SERIAL: &[u8] = &[0x01];
@@ -51,8 +52,35 @@ impl TryFrom<i32> for VerifiedBootState {
     }
 }
 
+/// Information provided once at start-of-day, normally by the bootloader.
+///
+/// Field order is fixed, to match the CBOR type definition of `RootOfTrust` in `IKeyMintDevice`.
+#[derive(Clone, Debug, AsCborValue, PartialEq, Eq)]
+pub struct BootInfo {
+    pub verified_boot_key: [u8; 32],
+    pub device_boot_locked: bool,
+    pub verified_boot_state: VerifiedBootState,
+    pub verified_boot_hash: [u8; 32],
+    pub boot_patchlevel: u32, // YYYYMMDD format
+}
+
+// Implement the `coset` CBOR serialization traits in terms of the local `AsCborValue` trait,
+// in order to get access to tagged versions of serialize/deserialize.
+impl coset::AsCborValue for BootInfo {
+    fn from_cbor_value(value: cbor::value::Value) -> coset::Result<Self> {
+        <Self as AsCborValue>::from_cbor_value(value).map_err(|e| e.into())
+    }
+    fn to_cbor_value(self) -> coset::Result<cbor::value::Value> {
+        <Self as AsCborValue>::to_cbor_value(self).map_err(|e| e.into())
+    }
+}
+
+impl coset::TaggedCborSerializable for BootInfo {
+    const TAG: u64 = 40001;
+}
+
 /// Representation of a date/time.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DateTime {
     pub ms_since_epoch: i64,
 }
@@ -71,20 +99,6 @@ impl AsCborValue for DateTime {
     fn cddl_schema() -> Option<String> {
         Some("int".to_string())
     }
-}
-
-/// Macro that emits an implementation of `TryFrom<i32>` for an enum type that has
-/// `[derive(N)]` attached to it.
-#[macro_export]
-macro_rules! try_from_n {
-    { $ename:ident } => {
-        impl core::convert::TryFrom<i32> for $ename {
-            type Error = super::ValueNotRecognized;
-            fn try_from(value: i32) -> Result<Self, Self::Error> {
-                Self::n(value).ok_or(super::ValueNotRecognized)
-            }
-        }
-    };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, N)]
@@ -118,11 +132,6 @@ try_from_n!(BlockMode);
 #[derive(Clone, Debug, Eq, PartialEq, AsCborValue)]
 pub struct Certificate {
     pub encoded_certificate: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, AsCborValue)]
-pub struct DeviceInfo {
-    pub device_info: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, N)]
@@ -262,17 +271,6 @@ pub enum HardwareAuthenticatorType {
 }
 try_from_n!(HardwareAuthenticatorType);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(i32)]
-pub enum RpcErrorCode {
-    Ok = 0, // not in HAL, assumed
-    Failed = 1,
-    InvalidMac = 2,
-    ProductionKeyInTestRequest = 3,
-    TestKeyInProductionRequest = 4,
-    InvalidEek = 5,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, AsCborValue)]
 pub struct KeyCharacteristics {
     pub security_level: SecurityLevel,
@@ -320,14 +318,14 @@ try_from_n!(KeyOrigin);
 pub enum KeyParam {
     Purpose(KeyPurpose),
     Algorithm(Algorithm),
-    KeySize(crypto::KeySizeInBits),
+    KeySize(KeySizeInBits),
     BlockMode(BlockMode),
     Digest(Digest),
     Padding(PaddingMode),
     CallerNonce,
     MinMacLength(u32),
     EcCurve(EcCurve),
-    RsaPublicExponent(crypto::rsa::Exponent),
+    RsaPublicExponent(RsaExponent),
     IncludeUniqueId,
     RsaOaepMgfDigest(Digest),
     BootloaderOnly,
@@ -476,11 +474,11 @@ impl crate::AsCborValue for KeyParam {
             Tag::EcCurve => KeyParam::EcCurve(<EcCurve>::from_cbor_value(raw)?),
             Tag::Origin => KeyParam::Origin(<KeyOrigin>::from_cbor_value(raw)?),
             Tag::Purpose => KeyParam::Purpose(<KeyPurpose>::from_cbor_value(raw)?),
-            Tag::KeySize => KeyParam::KeySize(<crypto::KeySizeInBits>::from_cbor_value(raw)?),
+            Tag::KeySize => KeyParam::KeySize(<KeySizeInBits>::from_cbor_value(raw)?),
             Tag::CallerNonce => KeyParam::CallerNonce,
             Tag::MinMacLength => KeyParam::MinMacLength(<u32>::from_cbor_value(raw)?),
             Tag::RsaPublicExponent => {
-                KeyParam::RsaPublicExponent(<crypto::rsa::Exponent>::from_cbor_value(raw)?)
+                KeyParam::RsaPublicExponent(<RsaExponent>::from_cbor_value(raw)?)
             }
             Tag::IncludeUniqueId => {
                 check_bool(raw)?;
@@ -664,7 +662,7 @@ impl crate::AsCborValue for KeyParam {
             KeyParam::CertificateNotAfter(v) => (Tag::CertificateNotAfter, v.to_cbor_value()?),
             KeyParam::MaxBootLevel(v) => (Tag::MaxBootLevel, v.to_cbor_value()?),
         };
-        Ok(cbor::value::Value::Array(vec![tag.to_cbor_value()?, val]))
+        Ok(cbor::value::Value::Array(vec_try![tag.to_cbor_value()?, val]?))
     }
     fn cddl_typename() -> Option<String> {
         Some("KeyParam".to_string())
@@ -753,7 +751,7 @@ impl crate::AsCborValue for KeyParam {
             KeyPurpose::cddl_ref(),
             "Tag_Purpose",
             Tag::KeySize as i32,
-            crypto::KeySizeInBits::cddl_ref(),
+            KeySizeInBits::cddl_ref(),
             "Tag_KeySize",
             Tag::CallerNonce as i32,
             Vec::<u8>::cddl_ref(),
@@ -762,7 +760,7 @@ impl crate::AsCborValue for KeyParam {
             u32::cddl_ref(),
             "Tag_MinMacLength",
             Tag::RsaPublicExponent as i32,
-            crypto::rsa::Exponent::cddl_ref(),
+            RsaExponent::cddl_ref(),
             "Tag_RsaPublicExponent",
             Tag::IncludeUniqueId as i32,
             "true",
@@ -910,7 +908,7 @@ impl crate::AsCborValue for KeyParam {
 }
 
 /// Determine the tag type for a tag, based on the top 4 bits of the tag number.
-pub(crate) fn tag_type(tag: Tag) -> TagType {
+pub fn tag_type(tag: Tag) -> TagType {
     match ((tag as u32) & 0xf0000000u32) as i32 {
         x if x == TagType::Enum as i32 => TagType::Enum,
         x if x == TagType::EnumRep as i32 => TagType::EnumRep,
@@ -944,11 +942,6 @@ pub enum KeyPurpose {
 }
 try_from_n!(KeyPurpose);
 
-#[derive(Clone, Debug, Eq, PartialEq, AsCborValue)]
-pub struct MacedPublicKey {
-    pub maced_key: Vec<u8>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, N)]
 #[repr(i32)]
 pub enum PaddingMode {
@@ -961,28 +954,6 @@ pub enum PaddingMode {
 }
 try_from_n!(PaddingMode);
 
-#[derive(Clone, Debug, Eq, PartialEq, AsCborValue)]
-pub struct ProtectedData {
-    pub protected_data: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, AsCborValue)]
-pub struct RpcHardwareInfo {
-    pub version_number: i32,
-    pub rpc_author_name: String,
-    pub supported_eek_curve: RpcEekCurve,
-    pub unique_id: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, N)]
-#[repr(i32)]
-pub enum RpcEekCurve {
-    None = 0,
-    P256 = 1,
-    Curve25519 = 2,
-}
-try_from_n!(RpcEekCurve);
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, N)]
 #[repr(i32)]
 pub enum SecurityLevel {
@@ -993,7 +964,7 @@ pub enum SecurityLevel {
 }
 try_from_n!(SecurityLevel);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, N)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, FromRawTag, N)]
 #[repr(i32)]
 pub enum Tag {
     Invalid = 0,
@@ -1080,22 +1051,3 @@ pub enum TagType {
     UlongRep = -1610612736,
 }
 try_from_n!(TagType);
-
-/// Build the HMAC input for a [`HardwareAuthToken`]
-pub fn hardware_auth_token_mac_input(token: &HardwareAuthToken) -> Vec<u8> {
-    let mut result = Vec::with_capacity(
-        size_of::<u8>() + // version=0 (BE)
-        size_of::<i64>() + // challenge (Host)
-        size_of::<i64>() + // user_id (Host)
-        size_of::<i64>() + // authenticator_id (Host)
-        size_of::<i32>() + // authenticator_type (BE)
-        size_of::<i64>(), // timestamp (BE)
-    );
-    result.extend_from_slice(&0u8.to_be_bytes()[..]);
-    result.extend_from_slice(&token.challenge.to_ne_bytes()[..]);
-    result.extend_from_slice(&token.user_id.to_ne_bytes()[..]);
-    result.extend_from_slice(&token.authenticator_id.to_ne_bytes()[..]);
-    result.extend_from_slice(&(token.authenticator_type as i32).to_be_bytes()[..]);
-    result.extend_from_slice(&token.timestamp.milliseconds.to_be_bytes()[..]);
-    result
-}
