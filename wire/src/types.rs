@@ -1,36 +1,34 @@
-//! Types and macros for communication between HAL and TA
-
-use crate::cbor_type_error;
-use crate::{
-    cbor,
-    wire::{
-        keymint::{
-            AttestationKey, DeviceInfo, ErrorCode, HardwareAuthToken, KeyCharacteristics,
-            KeyCreationResult, KeyFormat, KeyMintHardwareInfo, KeyParam, KeyPurpose,
-            MacedPublicKey, ProtectedData, RpcHardwareInfo,
-        },
-        secureclock::TimeStampToken,
-        sharedsecret::SharedSecretParameters,
-    },
-    AsCborValue, CborError,
+use crate::keymint::{
+    AttestationKey, HardwareAuthToken, KeyCharacteristics, KeyCreationResult, KeyFormat,
+    KeyMintHardwareInfo, KeyParam, KeyPurpose,
 };
+use crate::rpc;
+use crate::secureclock::TimeStampToken;
+use crate::sharedsecret::SharedSecretParameters;
+use crate::{cbor, cbor_type_error, vec_try, AsCborValue, CborError};
 use alloc::{
     format,
     string::{String, ToString},
-    vec,
     vec::Vec,
 };
 use enumn::N;
 use kmr_derive::AsCborValue;
 
-pub mod keymint;
-pub mod secureclock;
-pub mod sharedsecret;
+/// Key size in bits.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue)]
+pub struct KeySizeInBits(pub u32);
 
-/// Maximum supported size for CBOR-serialized messages.
-pub const MAX_SIZE: usize = 4096;
+/// RSA exponent.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue)]
+pub struct RsaExponent(pub u64);
+
+/// Default maximum supported size for CBOR-serialized messages.
+pub const DEFAULT_MAX_SIZE: usize = 4096;
 
 /// Marker type indicating failure to convert into an `enum` variant.
+#[derive(Debug)]
 pub struct ValueNotRecognized;
 
 /// Trait that associates an enum value of the specified type with a type.
@@ -206,7 +204,7 @@ pub struct SendRootOfTrustResponse {}
 // IKeyMintOperation methods.  These ...Request structures include an extra `op_handle` field whose
 // value was returned in the `InternalBeginResult` type and which identifies the operation in
 // progress.
-#[derive(Debug, AsCborValue)]
+#[derive(Debug, Clone, AsCborValue)]
 pub struct UpdateAadRequest {
     pub op_handle: i64, // Extra for internal use, from `InternalBeginResult`.
     pub input: Vec<u8>,
@@ -215,7 +213,7 @@ pub struct UpdateAadRequest {
 }
 #[derive(Debug, AsCborValue)]
 pub struct UpdateAadResponse {}
-#[derive(Debug, AsCborValue)]
+#[derive(Debug, Clone, AsCborValue)]
 pub struct UpdateRequest {
     pub op_handle: i64, // Extra for internal use, from `InternalBeginResult`.
     pub input: Vec<u8>,
@@ -252,7 +250,7 @@ pub struct AbortResponse {}
 pub struct GetRpcHardwareInfoRequest {}
 #[derive(Debug, AsCborValue)]
 pub struct GetRpcHardwareInfoResponse {
-    pub ret: RpcHardwareInfo,
+    pub ret: rpc::HardwareInfo,
 }
 #[derive(Debug, AsCborValue)]
 pub struct GenerateEcdsaP256KeyPairRequest {
@@ -260,20 +258,29 @@ pub struct GenerateEcdsaP256KeyPairRequest {
 }
 #[derive(Debug, AsCborValue)]
 pub struct GenerateEcdsaP256KeyPairResponse {
-    pub maced_public_key: MacedPublicKey,
+    pub maced_public_key: rpc::MacedPublicKey,
     pub ret: Vec<u8>,
 }
 #[derive(Debug, AsCborValue)]
 pub struct GenerateCertificateRequestRequest {
     pub test_mode: bool,
-    pub keys_to_sign: Vec<MacedPublicKey>,
+    pub keys_to_sign: Vec<rpc::MacedPublicKey>,
     pub endpoint_encryption_cert_chain: Vec<u8>,
     pub challenge: Vec<u8>,
 }
 #[derive(Debug, AsCborValue)]
 pub struct GenerateCertificateRequestResponse {
-    pub device_info: DeviceInfo,
-    pub protected_data: ProtectedData,
+    pub device_info: rpc::DeviceInfo,
+    pub protected_data: rpc::ProtectedData,
+    pub ret: Vec<u8>,
+}
+#[derive(Debug, AsCborValue)]
+pub struct GenerateCertificateRequestV2Request {
+    pub keys_to_sign: Vec<rpc::MacedPublicKey>,
+    pub challenge: Vec<u8>,
+}
+#[derive(Debug, AsCborValue)]
+pub struct GenerateCertificateRequestV2Response {
     pub ret: Vec<u8>,
 }
 
@@ -319,27 +326,50 @@ pub struct SetHalInfoResponse {}
 // Boot loader->TA at start of day.
 #[derive(Debug, AsCborValue)]
 pub struct SetBootInfoRequest {
-    pub verified_boot_key: [u8; 32],
+    pub verified_boot_key: Vec<u8>,
     pub device_boot_locked: bool,
     pub verified_boot_state: i32,
-    pub verified_boot_hash: [u8; 32],
+    pub verified_boot_hash: Vec<u8>,
     pub boot_patchlevel: u32, // YYYYMMDD format
 }
 #[derive(Debug, AsCborValue)]
 pub struct SetBootInfoResponse {}
 
-// Result of an operation, as an error code and a response message (only present for
-// `ErrorCode::OK`).
+/// Attestation ID information.
+#[derive(Clone, Debug, AsCborValue, PartialEq, Eq, Default)]
+pub struct AttestationIdInfo {
+    // The following fields are byte vectors that typically hold UTF-8 string data.
+    pub brand: Vec<u8>,
+    pub device: Vec<u8>,
+    pub product: Vec<u8>,
+    pub serial: Vec<u8>,
+    pub imei: Vec<u8>,
+    pub imei2: Vec<u8>,
+    pub meid: Vec<u8>,
+    pub manufacturer: Vec<u8>,
+    pub model: Vec<u8>,
+}
+
+// Provisioner->TA at device provisioning time.
+#[derive(Debug, AsCborValue)]
+pub struct SetAttestationIdsRequest {
+    pub ids: AttestationIdInfo,
+}
+#[derive(Debug, AsCborValue)]
+pub struct SetAttestationIdsResponse {}
+
+// Result of an operation, as an error code and a response message (only present when
+// `error_code` is zero).
 #[derive(Debug, AsCborValue)]
 pub struct PerformOpResponse {
-    pub error_code: ErrorCode,
+    pub error_code: i32,
     pub rsp: Option<PerformOpRsp>,
 }
 
-/// Declare a collection of related enums for an code and a pair of types.
+/// Declare a collection of related enums for a code and a pair of types.
 ///
 /// An invocation like:
-/// ```
+/// ```ignore
 /// declare_req_rsp_enums! { KeyMintOperation  => (PerformOpReq, PerformOpRsp) {
 ///     DeviceGetHardwareInfo = 0x11 => (GetHardwareInfoRequest, GetHardwareInfoResponse),
 ///     DeviceAddRngEntropy = 0x12 =>   (AddRngEntropyRequest, AddRngEntropyResponse),
@@ -349,7 +379,7 @@ pub struct PerformOpResponse {
 /// column), but whose contents are:
 ///
 /// - the numeric values (second column)
-///   ```
+///   ```ignore
 ///   #[derive(Copy, Clone, Debug, PartialOrd, Ord, PartialEq, Eq, Hash)]
 ///   enum KeyMintOperation {
 ///       DeviceGetHardwareInfo = 0x11,
@@ -358,7 +388,7 @@ pub struct PerformOpResponse {
 ///   ```
 ///
 /// - the types from the third column:
-///   ```
+///   ```ignore
 ///   #[derive(Debug)]
 ///   enum PerformOpReq {
 ///       DeviceGetHardwareInfo(GetHardwareInfoRequest),
@@ -367,7 +397,7 @@ pub struct PerformOpResponse {
 ///   ```
 ///
 /// - the types from the fourth column:
-///   ```
+///   ```ignore
 ///   #[derive(Debug)]
 ///   enum PerformOpRsp {
 ///       DeviceGetHardwareInfo(GetHardwareInfoResponse),
@@ -464,10 +494,12 @@ macro_rules! declare_req_rsp_enums {
             }
             fn to_cbor_value(self) -> Result<cbor::value::Value, CborError> {
                 Ok(cbor::value::Value::Array(match self {
-                    $( Self::$cname(val) => vec![
-                        $cenum::$cname.to_cbor_value()?,
-                        val.to_cbor_value()?
-                    ], )*
+                    $( Self::$cname(val) => {
+                        vec_try![
+                            $cenum::$cname.to_cbor_value()?,
+                            val.to_cbor_value()?
+                        ]?
+                    }, )*
                 }))
             }
 
@@ -500,10 +532,12 @@ macro_rules! declare_req_rsp_enums {
             }
             fn to_cbor_value(self) -> Result<cbor::value::Value, CborError> {
                 Ok(cbor::value::Value::Array(match self {
-                    $( Self::$cname(val) => vec![
-                        $cenum::$cname.to_cbor_value()?,
-                        val.to_cbor_value()?
-                    ], )*
+                    $( Self::$cname(val) => {
+                        vec_try![
+                            $cenum::$cname.to_cbor_value()?,
+                            val.to_cbor_value()?
+                        ]?
+                    }, )*
                 }))
             }
 
@@ -559,6 +593,7 @@ declare_req_rsp_enums! { KeyMintOperation  =>    (PerformOpReq, PerformOpRsp) {
     RpcGetHardwareInfo = 0x41 =>                       (GetRpcHardwareInfoRequest, GetRpcHardwareInfoResponse),
     RpcGenerateEcdsaP256KeyPair = 0x42 =>              (GenerateEcdsaP256KeyPairRequest, GenerateEcdsaP256KeyPairResponse),
     RpcGenerateCertificateRequest = 0x43 =>            (GenerateCertificateRequestRequest, GenerateCertificateRequestResponse),
+    RpcGenerateCertificateV2Request = 0x44 =>          (GenerateCertificateRequestV2Request, GenerateCertificateRequestV2Response),
     SharedSecretGetSharedSecretParameters = 0x51 =>    (GetSharedSecretParametersRequest, GetSharedSecretParametersResponse),
     SharedSecretComputeSharedSecret = 0x52 =>          (ComputeSharedSecretRequest, ComputeSharedSecretResponse),
     SecureClockGenerateTimeStamp = 0x61 =>             (GenerateTimeStampRequest, GenerateTimeStampResponse),
@@ -567,4 +602,16 @@ declare_req_rsp_enums! { KeyMintOperation  =>    (PerformOpReq, PerformOpRsp) {
     SendRootOfTrust = 0x73 =>                          (SendRootOfTrustRequest, SendRootOfTrustResponse),
     SetHalInfo = 0x81 =>                               (SetHalInfoRequest, SetHalInfoResponse),
     SetBootInfo = 0x82 =>                              (SetBootInfoRequest, SetBootInfoResponse),
+    SetAttestationIds = 0x83 =>                        (SetAttestationIdsRequest, SetAttestationIdsResponse),
 } }
+
+/// Indicate whether an operation is part of the `IRemotelyProvisionedComponent` HAL.
+pub fn is_rpc_operation(code: KeyMintOperation) -> bool {
+    matches!(
+        code,
+        KeyMintOperation::RpcGetHardwareInfo
+            | KeyMintOperation::RpcGenerateEcdsaP256KeyPair
+            | KeyMintOperation::RpcGenerateCertificateRequest
+            | KeyMintOperation::RpcGenerateCertificateV2Request
+    )
+}

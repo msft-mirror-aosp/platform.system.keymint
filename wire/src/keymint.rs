@@ -12,16 +12,80 @@
 //! - `KeyParam` is a Rust `enum` that is used in place of the `KeyParameter` struct, meaning...
 //! - `KeyParameterValue` is not included here.
 
-use crate::{cbor, cbor_type_error, crypto, AsCborValue, CborError};
+use crate::{
+    cbor, cbor_type_error, try_from_n, vec_try, AsCborValue, CborError, KeySizeInBits, RsaExponent,
+};
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::{vec, vec::Vec};
-use core::mem::size_of;
+use alloc::vec::Vec;
 use enumn::N;
-use kmr_derive::AsCborValue;
+use kmr_derive::{AsCborValue, FromRawTag};
+
+/// Default certificate serial number of 1.
+pub const DEFAULT_CERT_SERIAL: &[u8] = &[0x01];
+
+/// ASN.1 DER encoding of the default certificate subject of 'CN=Android Keystore Key'.
+pub const DEFAULT_CERT_SUBJECT: &[u8] = &[
+    0x30, 0x1f, // SEQUENCE len 31
+    0x31, 0x1d, // SET len 29
+    0x30, 0x1b, // SEQUENCE len 27
+    0x06, 0x03, // OBJECT IDENTIFIER len 3
+    0x55, 0x04, 0x03, // 2.5.4.3 (commonName)
+    0x0c, 0x14, // UTF8String len 20
+    0x41, 0x6e, 0x64, 0x72, 0x6f, 0x69, 0x64, 0x20, 0x4b, 0x65, 0x79, 0x73, 0x74, 0x6f, 0x72, 0x65,
+    0x20, 0x4b, 0x65, 0x79, // "Android Keystore Key"
+];
+
+/// Constants to indicate whether or not to include/expect more messages when splitting and then
+/// assembling the large responses sent from the TA to the HAL.
+pub const NEXT_MESSAGE_SIGNAL_TRUE: u8 = 0b00000001u8;
+pub const NEXT_MESSAGE_SIGNAL_FALSE: u8 = 0b00000000u8;
+
+/// Possible verified boot state values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, N, AsCborValue)]
+pub enum VerifiedBootState {
+    Verified = 0,
+    SelfSigned = 1,
+    Unverified = 2,
+    Failed = 3,
+}
+
+impl TryFrom<i32> for VerifiedBootState {
+    type Error = CborError;
+    fn try_from(v: i32) -> Result<Self, Self::Error> {
+        Self::n(v).ok_or(CborError::OutOfRangeIntegerValue)
+    }
+}
+
+/// Information provided once at start-of-day, normally by the bootloader.
+///
+/// Field order is fixed, to match the CBOR type definition of `RootOfTrust` in `IKeyMintDevice`.
+#[derive(Clone, Debug, AsCborValue, PartialEq, Eq)]
+pub struct BootInfo {
+    pub verified_boot_key: Vec<u8>,
+    pub device_boot_locked: bool,
+    pub verified_boot_state: VerifiedBootState,
+    pub verified_boot_hash: Vec<u8>,
+    pub boot_patchlevel: u32, // YYYYMMDD format
+}
+
+// Implement the `coset` CBOR serialization traits in terms of the local `AsCborValue` trait,
+// in order to get access to tagged versions of serialize/deserialize.
+impl coset::AsCborValue for BootInfo {
+    fn from_cbor_value(value: cbor::value::Value) -> coset::Result<Self> {
+        <Self as AsCborValue>::from_cbor_value(value).map_err(|e| e.into())
+    }
+    fn to_cbor_value(self) -> coset::Result<cbor::value::Value> {
+        <Self as AsCborValue>::to_cbor_value(self).map_err(|e| e.into())
+    }
+}
+
+impl coset::TaggedCborSerializable for BootInfo {
+    const TAG: u64 = 40001;
+}
 
 /// Representation of a date/time.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DateTime {
     pub ms_since_epoch: i64,
 }
@@ -31,28 +95,15 @@ impl AsCborValue for DateTime {
         let val = <i64>::from_cbor_value(value)?;
         Ok(Self { ms_since_epoch: val })
     }
-
     fn to_cbor_value(self) -> Result<cbor::value::Value, CborError> {
         self.ms_since_epoch.to_cbor_value()
     }
-
     fn cddl_typename() -> Option<String> {
+        Some("DateTime".to_string())
+    }
+    fn cddl_schema() -> Option<String> {
         Some("int".to_string())
     }
-}
-
-/// Macro that emits an implementation of `TryFrom<i32>` for an enum type that has
-/// `[derive(N)]` attached to it.
-#[macro_export]
-macro_rules! try_from_n {
-    { $ename:ident } => {
-        impl core::convert::TryFrom<i32> for $ename {
-            type Error = super::ValueNotRecognized;
-            fn try_from(value: i32) -> Result<Self, Self::Error> {
-                Self::n(value).ok_or(super::ValueNotRecognized)
-            }
-        }
-    };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, N)]
@@ -86,11 +137,6 @@ try_from_n!(BlockMode);
 #[derive(Clone, Debug, Eq, PartialEq, AsCborValue)]
 pub struct Certificate {
     pub encoded_certificate: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, AsCborValue)]
-pub struct DeviceInfo {
-    pub device_info: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, N)]
@@ -230,17 +276,6 @@ pub enum HardwareAuthenticatorType {
 }
 try_from_n!(HardwareAuthenticatorType);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(i32)]
-pub enum RpcErrorCode {
-    Ok = 0, // not in HAL, assumed
-    Failed = 1,
-    InvalidMac = 2,
-    ProductionKeyInTestRequest = 3,
-    TestKeyInProductionRequest = 4,
-    InvalidEek = 5,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, AsCborValue)]
 pub struct KeyCharacteristics {
     pub security_level: SecurityLevel,
@@ -288,14 +323,14 @@ try_from_n!(KeyOrigin);
 pub enum KeyParam {
     Purpose(KeyPurpose),
     Algorithm(Algorithm),
-    KeySize(crypto::KeySizeInBits),
+    KeySize(KeySizeInBits),
     BlockMode(BlockMode),
     Digest(Digest),
     Padding(PaddingMode),
     CallerNonce,
     MinMacLength(u32),
     EcCurve(EcCurve),
-    RsaPublicExponent(crypto::rsa::Exponent),
+    RsaPublicExponent(RsaExponent),
     IncludeUniqueId,
     RsaOaepMgfDigest(Digest),
     BootloaderOnly,
@@ -329,6 +364,7 @@ pub enum KeyParam {
     AttestationIdProduct(Vec<u8>),
     AttestationIdSerial(Vec<u8>),
     AttestationIdImei(Vec<u8>),
+    AttestationIdSecondImei(Vec<u8>),
     AttestationIdMeid(Vec<u8>),
     AttestationIdManufacturer(Vec<u8>),
     AttestationIdModel(Vec<u8>),
@@ -392,6 +428,7 @@ impl KeyParam {
             KeyParam::AttestationIdProduct(_) => Tag::AttestationIdProduct,
             KeyParam::AttestationIdSerial(_) => Tag::AttestationIdSerial,
             KeyParam::AttestationIdImei(_) => Tag::AttestationIdImei,
+            KeyParam::AttestationIdSecondImei(_) => Tag::AttestationIdSecondImei,
             KeyParam::AttestationIdMeid(_) => Tag::AttestationIdMeid,
             KeyParam::AttestationIdManufacturer(_) => Tag::AttestationIdManufacturer,
             KeyParam::AttestationIdModel(_) => Tag::AttestationIdModel,
@@ -408,6 +445,15 @@ impl KeyParam {
             KeyParam::CertificateNotAfter(_) => Tag::CertificateNotAfter,
             KeyParam::MaxBootLevel(_) => Tag::MaxBootLevel,
         }
+    }
+}
+
+/// Check that a `bool` value is true (false values are represented by the absence of a tag).
+fn check_bool(value: cbor::value::Value) -> Result<(), crate::CborError> {
+    match value {
+        cbor::value::Value::Bool(true) => Ok(()),
+        cbor::value::Value::Bool(false) => Err(crate::CborError::UnexpectedItem("false", "true")),
+        _ => crate::cbor_type_error(&value, "true"),
     }
 }
 
@@ -435,17 +481,29 @@ impl crate::AsCborValue for KeyParam {
             Tag::EcCurve => KeyParam::EcCurve(<EcCurve>::from_cbor_value(raw)?),
             Tag::Origin => KeyParam::Origin(<KeyOrigin>::from_cbor_value(raw)?),
             Tag::Purpose => KeyParam::Purpose(<KeyPurpose>::from_cbor_value(raw)?),
-            Tag::KeySize => KeyParam::KeySize(crypto::KeySizeInBits(<u32>::from_cbor_value(raw)?)),
+            Tag::KeySize => KeyParam::KeySize(<KeySizeInBits>::from_cbor_value(raw)?),
             Tag::CallerNonce => KeyParam::CallerNonce,
             Tag::MinMacLength => KeyParam::MinMacLength(<u32>::from_cbor_value(raw)?),
             Tag::RsaPublicExponent => {
-                KeyParam::RsaPublicExponent(crypto::rsa::Exponent(<u64>::from_cbor_value(raw)?))
+                KeyParam::RsaPublicExponent(<RsaExponent>::from_cbor_value(raw)?)
             }
-            Tag::IncludeUniqueId => KeyParam::IncludeUniqueId,
+            Tag::IncludeUniqueId => {
+                check_bool(raw)?;
+                KeyParam::IncludeUniqueId
+            }
             Tag::RsaOaepMgfDigest => KeyParam::RsaOaepMgfDigest(<Digest>::from_cbor_value(raw)?),
-            Tag::BootloaderOnly => KeyParam::BootloaderOnly,
-            Tag::RollbackResistance => KeyParam::RollbackResistance,
-            Tag::EarlyBootOnly => KeyParam::EarlyBootOnly,
+            Tag::BootloaderOnly => {
+                check_bool(raw)?;
+                KeyParam::BootloaderOnly
+            }
+            Tag::RollbackResistance => {
+                check_bool(raw)?;
+                KeyParam::RollbackResistance
+            }
+            Tag::EarlyBootOnly => {
+                check_bool(raw)?;
+                KeyParam::EarlyBootOnly
+            }
             Tag::ActiveDatetime => KeyParam::ActiveDatetime(<DateTime>::from_cbor_value(raw)?),
             Tag::OriginationExpireDatetime => {
                 KeyParam::OriginationExpireDatetime(<DateTime>::from_cbor_value(raw)?)
@@ -457,13 +515,25 @@ impl crate::AsCborValue for KeyParam {
             Tag::UsageCountLimit => KeyParam::UsageCountLimit(<u32>::from_cbor_value(raw)?),
             Tag::UserId => KeyParam::UserId(<u32>::from_cbor_value(raw)?),
             Tag::UserSecureId => KeyParam::UserSecureId(<u64>::from_cbor_value(raw)?),
-            Tag::NoAuthRequired => KeyParam::NoAuthRequired,
+            Tag::NoAuthRequired => {
+                check_bool(raw)?;
+                KeyParam::NoAuthRequired
+            }
             Tag::UserAuthType => KeyParam::UserAuthType(<u32>::from_cbor_value(raw)?),
             Tag::AuthTimeout => KeyParam::AuthTimeout(<u32>::from_cbor_value(raw)?),
             Tag::AllowWhileOnBody => KeyParam::AllowWhileOnBody,
-            Tag::TrustedUserPresenceRequired => KeyParam::TrustedUserPresenceRequired,
-            Tag::TrustedConfirmationRequired => KeyParam::TrustedConfirmationRequired,
-            Tag::UnlockedDeviceRequired => KeyParam::UnlockedDeviceRequired,
+            Tag::TrustedUserPresenceRequired => {
+                check_bool(raw)?;
+                KeyParam::TrustedUserPresenceRequired
+            }
+            Tag::TrustedConfirmationRequired => {
+                check_bool(raw)?;
+                KeyParam::TrustedConfirmationRequired
+            }
+            Tag::UnlockedDeviceRequired => {
+                check_bool(raw)?;
+                KeyParam::UnlockedDeviceRequired
+            }
             Tag::ApplicationId => KeyParam::ApplicationId(<Vec<u8>>::from_cbor_value(raw)?),
             Tag::ApplicationData => KeyParam::ApplicationData(<Vec<u8>>::from_cbor_value(raw)?),
             Tag::CreationDatetime => KeyParam::CreationDatetime(<DateTime>::from_cbor_value(raw)?),
@@ -489,6 +559,9 @@ impl crate::AsCborValue for KeyParam {
                 KeyParam::AttestationIdSerial(<Vec<u8>>::from_cbor_value(raw)?)
             }
             Tag::AttestationIdImei => KeyParam::AttestationIdImei(<Vec<u8>>::from_cbor_value(raw)?),
+            Tag::AttestationIdSecondImei => {
+                KeyParam::AttestationIdSecondImei(<Vec<u8>>::from_cbor_value(raw)?)
+            }
             Tag::AttestationIdMeid => KeyParam::AttestationIdMeid(<Vec<u8>>::from_cbor_value(raw)?),
             Tag::AttestationIdManufacturer => {
                 KeyParam::AttestationIdManufacturer(<Vec<u8>>::from_cbor_value(raw)?)
@@ -498,11 +571,17 @@ impl crate::AsCborValue for KeyParam {
             }
             Tag::VendorPatchlevel => KeyParam::VendorPatchlevel(<u32>::from_cbor_value(raw)?),
             Tag::BootPatchlevel => KeyParam::BootPatchlevel(<u32>::from_cbor_value(raw)?),
-            Tag::DeviceUniqueAttestation => KeyParam::DeviceUniqueAttestation,
+            Tag::DeviceUniqueAttestation => {
+                check_bool(raw)?;
+                KeyParam::DeviceUniqueAttestation
+            }
             Tag::StorageKey => KeyParam::StorageKey,
             Tag::Nonce => KeyParam::Nonce(<Vec<u8>>::from_cbor_value(raw)?),
             Tag::MacLength => KeyParam::MacLength(<u32>::from_cbor_value(raw)?),
-            Tag::ResetSinceIdRotation => KeyParam::ResetSinceIdRotation,
+            Tag::ResetSinceIdRotation => {
+                check_bool(raw)?;
+                KeyParam::ResetSinceIdRotation
+            }
             Tag::CertificateSerial => KeyParam::CertificateSerial(<Vec<u8>>::from_cbor_value(raw)?),
             Tag::CertificateSubject => {
                 KeyParam::CertificateSubject(<Vec<u8>>::from_cbor_value(raw)?)
@@ -527,10 +606,10 @@ impl crate::AsCborValue for KeyParam {
             KeyParam::EcCurve(v) => (Tag::EcCurve, v.to_cbor_value()?),
             KeyParam::Origin(v) => (Tag::Origin, v.to_cbor_value()?),
             KeyParam::Purpose(v) => (Tag::Purpose, v.to_cbor_value()?),
-            KeyParam::KeySize(v) => (Tag::KeySize, v.0.to_cbor_value()?),
+            KeyParam::KeySize(v) => (Tag::KeySize, v.to_cbor_value()?),
             KeyParam::CallerNonce => (Tag::CallerNonce, true.to_cbor_value()?),
             KeyParam::MinMacLength(v) => (Tag::MinMacLength, v.to_cbor_value()?),
-            KeyParam::RsaPublicExponent(v) => (Tag::RsaPublicExponent, v.0.to_cbor_value()?),
+            KeyParam::RsaPublicExponent(v) => (Tag::RsaPublicExponent, v.to_cbor_value()?),
             KeyParam::IncludeUniqueId => (Tag::IncludeUniqueId, true.to_cbor_value()?),
             KeyParam::RsaOaepMgfDigest(v) => (Tag::RsaOaepMgfDigest, v.to_cbor_value()?),
             KeyParam::BootloaderOnly => (Tag::BootloaderOnly, true.to_cbor_value()?),
@@ -573,6 +652,9 @@ impl crate::AsCborValue for KeyParam {
             KeyParam::AttestationIdProduct(v) => (Tag::AttestationIdProduct, v.to_cbor_value()?),
             KeyParam::AttestationIdSerial(v) => (Tag::AttestationIdSerial, v.to_cbor_value()?),
             KeyParam::AttestationIdImei(v) => (Tag::AttestationIdImei, v.to_cbor_value()?),
+            KeyParam::AttestationIdSecondImei(v) => {
+                (Tag::AttestationIdSecondImei, v.to_cbor_value()?)
+            }
             KeyParam::AttestationIdMeid(v) => (Tag::AttestationIdMeid, v.to_cbor_value()?),
             KeyParam::AttestationIdManufacturer(v) => {
                 (Tag::AttestationIdManufacturer, v.to_cbor_value()?)
@@ -593,50 +675,251 @@ impl crate::AsCborValue for KeyParam {
             KeyParam::CertificateNotAfter(v) => (Tag::CertificateNotAfter, v.to_cbor_value()?),
             KeyParam::MaxBootLevel(v) => (Tag::MaxBootLevel, v.to_cbor_value()?),
         };
-        Ok(cbor::value::Value::Array(vec![tag.to_cbor_value()?, val]))
+        Ok(cbor::value::Value::Array(vec_try![tag.to_cbor_value()?, val]?))
     }
     fn cddl_typename() -> Option<String> {
-        Some("KeyParameter".to_string())
+        Some("KeyParam".to_string())
     }
     fn cddl_schema() -> Option<String> {
         Some(format!(
-            r#"[
-    tag: {},
-    ; Choice for value is determined by tag value
-    value: &(
-        Invalid: {},
-        Algorithm: {},
-        BlockMode: {},
-        PaddingMode: {},
-        Digest: {},
-        EcCurve: {},
-        Origin: {},
-        KeyPurpose: {},
-        HardwareAuthenticatorType: {},
-        SecurityLevel: {},
-        BoolValue: {},
-        Integer: {},
-        LongInteger: {},
-        DateTime: {},
-        Blob: {},
-    )
-]"#,
-            <Tag>::cddl_ref(),
-            <i32>::cddl_ref(),
-            <Algorithm>::cddl_ref(),
-            <BlockMode>::cddl_ref(),
-            <PaddingMode>::cddl_ref(),
-            <Digest>::cddl_ref(),
-            <EcCurve>::cddl_ref(),
-            <KeyOrigin>::cddl_ref(),
-            <KeyPurpose>::cddl_ref(),
-            <HardwareAuthenticatorType>::cddl_ref(),
-            <SecurityLevel>::cddl_ref(),
-            <bool>::cddl_ref(),
-            <i32>::cddl_ref(),
-            <i64>::cddl_ref(),
-            <i64>::cddl_ref(),
-            <Vec<u8>>::cddl_ref(),
+            "&(
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+    [{}, {}], ; {}
+)",
+            Tag::Algorithm as i32,
+            Algorithm::cddl_ref(),
+            "Tag_Algorithm",
+            Tag::BlockMode as i32,
+            BlockMode::cddl_ref(),
+            "Tag_BlockMode",
+            Tag::Padding as i32,
+            PaddingMode::cddl_ref(),
+            "Tag_Padding",
+            Tag::Digest as i32,
+            Digest::cddl_ref(),
+            "Tag_Digest",
+            Tag::EcCurve as i32,
+            EcCurve::cddl_ref(),
+            "Tag_EcCurve",
+            Tag::Origin as i32,
+            KeyOrigin::cddl_ref(),
+            "Tag_Origin",
+            Tag::Purpose as i32,
+            KeyPurpose::cddl_ref(),
+            "Tag_Purpose",
+            Tag::KeySize as i32,
+            KeySizeInBits::cddl_ref(),
+            "Tag_KeySize",
+            Tag::CallerNonce as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_CallerNonce",
+            Tag::MinMacLength as i32,
+            u32::cddl_ref(),
+            "Tag_MinMacLength",
+            Tag::RsaPublicExponent as i32,
+            RsaExponent::cddl_ref(),
+            "Tag_RsaPublicExponent",
+            Tag::IncludeUniqueId as i32,
+            "true",
+            "Tag_IncludeUniqueId",
+            Tag::RsaOaepMgfDigest as i32,
+            Digest::cddl_ref(),
+            "Tag_RsaOaepMgfDigest",
+            Tag::BootloaderOnly as i32,
+            "true",
+            "Tag_BootloaderOnly",
+            Tag::RollbackResistance as i32,
+            "true",
+            "Tag_RollbackResistance",
+            Tag::EarlyBootOnly as i32,
+            "true",
+            "Tag_EarlyBootOnly",
+            Tag::ActiveDatetime as i32,
+            DateTime::cddl_ref(),
+            "Tag_ActiveDatetime",
+            Tag::OriginationExpireDatetime as i32,
+            DateTime::cddl_ref(),
+            "Tag_OriginationExpireDatetime",
+            Tag::UsageExpireDatetime as i32,
+            DateTime::cddl_ref(),
+            "Tag_UsageExpireDatetime",
+            Tag::MaxUsesPerBoot as i32,
+            u32::cddl_ref(),
+            "Tag_MaxUsesPerBoot",
+            Tag::UsageCountLimit as i32,
+            u32::cddl_ref(),
+            "Tag_UsageCountLimit",
+            Tag::UserId as i32,
+            u32::cddl_ref(),
+            "Tag_UserId",
+            Tag::UserSecureId as i32,
+            u64::cddl_ref(),
+            "Tag_UserSecureId",
+            Tag::NoAuthRequired as i32,
+            "true",
+            "Tag_NoAuthRequired",
+            Tag::UserAuthType as i32,
+            u32::cddl_ref(),
+            "Tag_UserAuthType",
+            Tag::AuthTimeout as i32,
+            u32::cddl_ref(),
+            "Tag_AuthTimeout",
+            Tag::AllowWhileOnBody as i32,
+            "true",
+            "Tag_AllowWhileOnBody",
+            Tag::TrustedUserPresenceRequired as i32,
+            "true",
+            "Tag_TrustedUserPresenceRequired",
+            Tag::TrustedConfirmationRequired as i32,
+            "true",
+            "Tag_TrustedConfirmationRequired",
+            Tag::UnlockedDeviceRequired as i32,
+            "true",
+            "Tag_UnlockedDeviceRequired",
+            Tag::ApplicationId as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_ApplicationId",
+            Tag::ApplicationData as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_ApplicationData",
+            Tag::CreationDatetime as i32,
+            DateTime::cddl_ref(),
+            "Tag_CreationDatetime",
+            Tag::RootOfTrust as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_RootOfTrust",
+            Tag::OsVersion as i32,
+            u32::cddl_ref(),
+            "Tag_OsVersion",
+            Tag::OsPatchlevel as i32,
+            u32::cddl_ref(),
+            "Tag_OsPatchlevel",
+            Tag::AttestationChallenge as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_AttestationChallenge",
+            Tag::AttestationApplicationId as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_AttestationApplicationId",
+            Tag::AttestationIdBrand as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_AttestationIdBrand",
+            Tag::AttestationIdDevice as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_AttestationIdDevice",
+            Tag::AttestationIdProduct as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_AttestationIdProduct",
+            Tag::AttestationIdSerial as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_AttestationIdSerial",
+            Tag::AttestationIdImei as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_AttestationIdImei",
+            Tag::AttestationIdSecondImei as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_AttestationIdSecondImei",
+            Tag::AttestationIdMeid as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_AttestationIdMeid",
+            Tag::AttestationIdManufacturer as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_AttestationIdManufacturer",
+            Tag::AttestationIdModel as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_AttestationIdModel",
+            Tag::VendorPatchlevel as i32,
+            u32::cddl_ref(),
+            "Tag_VendorPatchlevel",
+            Tag::BootPatchlevel as i32,
+            u32::cddl_ref(),
+            "Tag_BootPatchlevel",
+            Tag::DeviceUniqueAttestation as i32,
+            "true",
+            "Tag_DeviceUniqueAttestation",
+            Tag::StorageKey as i32,
+            "true",
+            "Tag_StorageKey",
+            Tag::Nonce as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_Nonce",
+            Tag::MacLength as i32,
+            u32::cddl_ref(),
+            "Tag_MacLength",
+            Tag::ResetSinceIdRotation as i32,
+            "true",
+            "Tag_ResetSinceIdRotation",
+            Tag::CertificateSerial as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_CertificateSerial",
+            Tag::CertificateSubject as i32,
+            Vec::<u8>::cddl_ref(),
+            "Tag_CertificateSubject",
+            Tag::CertificateNotBefore as i32,
+            DateTime::cddl_ref(),
+            "Tag_CertificateNotBefore",
+            Tag::CertificateNotAfter as i32,
+            DateTime::cddl_ref(),
+            "Tag_CertificateNotAfter",
+            Tag::MaxBootLevel as i32,
+            u32::cddl_ref(),
+            "Tag_MaxBootLevel",
         ))
     }
 }
@@ -658,6 +941,11 @@ pub fn tag_type(tag: Tag) -> TagType {
     }
 }
 
+/// Determine the raw tag value with tag type information stripped out.
+pub fn raw_tag_value(tag: Tag) -> u32 {
+    (tag as u32) & 0x0fffffffu32
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, N)]
 #[repr(i32)]
 pub enum KeyPurpose {
@@ -671,11 +959,6 @@ pub enum KeyPurpose {
 }
 try_from_n!(KeyPurpose);
 
-#[derive(Clone, Debug, Eq, PartialEq, AsCborValue)]
-pub struct MacedPublicKey {
-    pub maced_key: Vec<u8>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, N)]
 #[repr(i32)]
 pub enum PaddingMode {
@@ -688,28 +971,6 @@ pub enum PaddingMode {
 }
 try_from_n!(PaddingMode);
 
-#[derive(Clone, Debug, Eq, PartialEq, AsCborValue)]
-pub struct ProtectedData {
-    pub protected_data: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, AsCborValue)]
-pub struct RpcHardwareInfo {
-    pub version_number: i32,
-    pub rpc_author_name: String,
-    pub supported_eek_curve: RpcEekCurve,
-    pub unique_id: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, N)]
-#[repr(i32)]
-pub enum RpcEekCurve {
-    None = 0,
-    P256 = 1,
-    Curve25519 = 2,
-}
-try_from_n!(RpcEekCurve);
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, N)]
 #[repr(i32)]
 pub enum SecurityLevel {
@@ -720,7 +981,7 @@ pub enum SecurityLevel {
 }
 try_from_n!(SecurityLevel);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, N)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, FromRawTag, N)]
 #[repr(i32)]
 pub enum Tag {
     Invalid = 0,
@@ -778,6 +1039,7 @@ pub enum Tag {
     DeviceUniqueAttestation = 1879048912,
     IdentityCredentialKey = 1879048913,
     StorageKey = 1879048914,
+    AttestationIdSecondImei = -1879047469,
     AssociatedData = -1879047192,
     Nonce = -1879047191,
     MacLength = 805307371,
@@ -807,22 +1069,3 @@ pub enum TagType {
     UlongRep = -1610612736,
 }
 try_from_n!(TagType);
-
-/// Build the HMAC input for a [`HardwareAuthToken`]
-pub fn hardware_auth_token_mac_input(token: &HardwareAuthToken) -> Vec<u8> {
-    let mut result = Vec::with_capacity(
-        size_of::<u8>() + // version=0 (BE)
-        size_of::<i64>() + // challenge (Host)
-        size_of::<i64>() + // user_id (Host)
-        size_of::<i64>() + // authenticator_id (Host)
-        size_of::<i32>() + // authenticator_type (BE)
-        size_of::<i64>(), // timestamp (BE)
-    );
-    result.extend_from_slice(&0u8.to_be_bytes()[..]);
-    result.extend_from_slice(&token.challenge.to_ne_bytes()[..]);
-    result.extend_from_slice(&token.user_id.to_ne_bytes()[..]);
-    result.extend_from_slice(&token.authenticator_id.to_ne_bytes()[..]);
-    result.extend_from_slice(&(token.authenticator_type as i32).to_be_bytes()[..]);
-    result.extend_from_slice(&token.timestamp.milliseconds.to_be_bytes()[..]);
-    result
-}

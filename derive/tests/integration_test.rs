@@ -1,5 +1,5 @@
-use kmr_common::{cbor_type_error, AsCborValue, CborError};
 use kmr_derive::AsCborValue;
+use kmr_wire::{cbor_type_error, AsCborValue, CborError};
 
 #[derive(Clone, Debug, PartialEq, Eq, AsCborValue)]
 struct NamedFields {
@@ -44,5 +44,8 @@ fn test_derive_numeric_enum_roundtrip() {
     let got = NumericEnum::from_cbor_value(want_value).unwrap();
     assert_eq!(want, got);
     assert_eq!(NumericEnum::cddl_typename().unwrap(), "NumericEnum");
-    assert_eq!(NumericEnum::cddl_schema().unwrap(), "int");
+    assert_eq!(
+        NumericEnum::cddl_schema().unwrap(),
+        "&(\n    NumericEnum_One: 1,\n    NumericEnum_Two: 2,\n    NumericEnum_Three: 3,\n)"
+    );
 }

@@ -3,7 +3,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
 use syn::{
     parse_macro_input, parse_quote, spanned::Spanned, Data, DeriveInput, Fields, GenericParam,
-    Generics, Index,
+    Generics, Ident, Index,
 };
 
 /// Derive macro that implements the `AsCborValue` trait.  Using this macro requires
@@ -23,7 +23,7 @@ fn derive_as_cbor_value_internal(input: &DeriveInput) -> proc_macro::TokenStream
 
     let from_val = from_val_struct(&input.data);
     let to_val = to_val_struct(&input.data);
-    let cddl = cddl_struct(&input.data);
+    let cddl = cddl_struct(name, &input.data);
 
     let expanded = quote! {
         // The generated impl
@@ -38,7 +38,7 @@ fn derive_as_cbor_value_internal(input: &DeriveInput) -> proc_macro::TokenStream
                 Some(stringify!(#name).to_string())
             }
             fn cddl_schema() -> Option<String> {
-                Some(#cddl)
+                #cddl
             }
         }
     };
@@ -65,40 +65,64 @@ fn to_val_struct(data: &Data) -> TokenStream {
                 Fields::Named(ref fields) => {
                     // Expands to an expression like
                     //
-                    //     Ok(ciborium::value::Value::Array(vec![
-                    //         self.x.to_cbor_value()?,
-                    //         self.y.to_cbor_value()?,
-                    //         self.z.to_cbor_value()?,
-                    //     ]))
-                    //
-                    // but using fully qualified function call syntax.
+                    //     {
+                    //         let mut v = Vec::new();
+                    //         v.try_reserve(3).map_err(|_e| CborError::AllocationFailed)?;
+                    //         v.push(AsCborValue::to_cbor_value(self.x)?);
+                    //         v.push(AsCborValue::to_cbor_value(self.y)?);
+                    //         v.push(AsCborValue::to_cbor_value(self.z)?);
+                    //         Ok(ciborium::value::Value::Array(v))
+                    //     }
+                    let nfields = fields.named.len();
                     let recurse = fields.named.iter().map(|f| {
                         let name = &f.ident;
                         quote_spanned! {f.span()=>
-                            AsCborValue::to_cbor_value(self.#name)?
+                            v.push(AsCborValue::to_cbor_value(self.#name)?)
                         }
                     });
                     quote! {
-                        Ok(ciborium::value::Value::Array(vec![ #(#recurse, )* ]))
+                        {
+                            let mut v = Vec::new();
+                            v.try_reserve(#nfields).map_err(|_e| CborError::AllocationFailed)?;
+                            #(#recurse; )*
+                            Ok(ciborium::value::Value::Array(v))
+                        }
+                    }
+                }
+                Fields::Unnamed(ref fields) if fields.unnamed.len() == 1 => {
+                    // For a newtype, expands to an expression
+                    //
+                    //     self.0.to_cbor_value()
+                    quote! {
+                        self.0.to_cbor_value()
                     }
                 }
                 Fields::Unnamed(ref fields) => {
                     // Expands to an expression like
                     //
-                    //     Ok(ciborium::value::Value::Array(vec![
-                    //         self.0.to_cbor_value()?,
-                    //         self.1.to_cbor_value()?,
-                    //         self.2.to_cbor_value()?,
-                    //     ]))
                     //
+                    //     {
+                    //         let mut v = Vec::new();
+                    //         v.try_reserve(3).map_err(|_e| CborError::AllocationFailed)?;
+                    //         v.push(AsCborValue::to_cbor_value(self.0)?);
+                    //         v.push(AsCborValue::to_cbor_value(self.1)?);
+                    //         v.push(AsCborValue::to_cbor_value(self.2)?);
+                    //         Ok(ciborium::value::Value::Array(v))
+                    //     }
+                    let nfields = fields.unnamed.len();
                     let recurse = fields.unnamed.iter().enumerate().map(|(i, f)| {
                         let index = Index::from(i);
                         quote_spanned! {f.span()=>
-                            AsCborValue::to_cbor_value(self.#index)?
+                            v.push(AsCborValue::to_cbor_value(self.#index)?)
                         }
                     });
                     quote! {
-                        Ok(ciborium::value::Value::Array(vec![ #(#recurse, )* ]))
+                        {
+                            let mut v = Vec::new();
+                            v.try_reserve(#nfields).map_err(|_e| CborError::AllocationFailed)?;
+                            #(#recurse; )*
+                            Ok(ciborium::value::Value::Array(v))
+                        }
                     }
                 }
                 Fields::Unit => unimplemented!(),
@@ -114,7 +138,8 @@ fn to_val_struct(data: &Data) -> TokenStream {
     }
 }
 
-/// Generate an expression to convert a `ciborium::value::Value` into an instance of a compound type.
+/// Generate an expression to convert a `ciborium::value::Value` into an instance of a compound
+/// type.
 fn from_val_struct(data: &Data) -> TokenStream {
     match data {
         Data::Struct(ref data) => {
@@ -152,12 +177,25 @@ fn from_val_struct(data: &Data) -> TokenStream {
                             _ => return cbor_type_error(&value, "arr"),
                         };
                         if a.len() != #nfields {
-                            return Err(CborError::UnexpectedItem("arr", concat!("arr len ", stringify!(#nfields))));
+                            return Err(CborError::UnexpectedItem(
+                                "arr",
+                                concat!("arr len ", stringify!(#nfields)),
+                            ));
                         }
                         // Fields specified in reverse order to reduce shifting.
                         Ok(Self {
                             #(#recurse, )*
                         })
+                    }
+                }
+                Fields::Unnamed(ref fields) if fields.unnamed.len() == 1 => {
+                    // For a newtype, expands to an expression like
+                    //
+                    //     Ok(Self(<InnerType>::from_cbor_value(value)?))
+                    let inner = fields.unnamed.first().unwrap();
+                    let typ = &inner.ty;
+                    quote! {
+                        Ok(Self(<#typ>::from_cbor_value(value)?))
                     }
                 }
                 Fields::Unnamed(ref fields) => {
@@ -195,7 +233,9 @@ fn from_val_struct(data: &Data) -> TokenStream {
                             _ => return cbor_type_error(&value, "arr"),
                         };
                         if a.len() != #nfields {
-                            return Err(CborError::UnexpectedItem("arr", concat!("arr len ", stringify!(#nfields))));
+                            return Err(CborError::UnexpectedItem("arr",
+                                                                 concat!("arr len ",
+                                                                         stringify!(#nfields))));
                         }
                         // Fields specified in reverse order to reduce shifting.
                         #(#recurse1)*
@@ -253,14 +293,14 @@ fn from_val_struct(data: &Data) -> TokenStream {
 }
 
 /// Generate an expression that expresses the CDDL schema for the type.
-fn cddl_struct(data: &Data) -> TokenStream {
+fn cddl_struct(name: &Ident, data: &Data) -> TokenStream {
     match *data {
         Data::Struct(ref data) => {
             match data.fields {
                 Fields::Named(ref fields) => {
                     if fields.named.iter().next().is_none() {
                         return quote! {
-                            format!("[]")
+                            Some(format!("[]"))
                         };
                     }
                     // Expands to an expression like
@@ -292,16 +332,23 @@ fn cddl_struct(data: &Data) -> TokenStream {
                         }
                     });
                     quote! {
-                        format!(
+                        Some(format!(
                             #fmt,
                             #(#recurse, )*
-                        )
+                        ))
+                    }
+                }
+                Fields::Unnamed(ref fields) if fields.unnamed.len() == 1 => {
+                    let inner = fields.unnamed.first().unwrap();
+                    let typ = &inner.ty;
+                    quote! {
+                        Some(<#typ>::cddl_ref())
                     }
                 }
                 Fields::Unnamed(ref fields) => {
                     if fields.unnamed.iter().next().is_none() {
                         return quote! {
-                            format!("()")
+                            Some(format!("()"))
                         };
                     }
                     // Expands to an expression like
@@ -333,20 +380,204 @@ fn cddl_struct(data: &Data) -> TokenStream {
                         }
                     });
                     quote! {
-                        format!(
+                        Some(format!(
                             #fmt,
                             #(#recurse, )*
-                        )
+                        ))
                     }
                 }
                 Fields::Unit => unimplemented!(),
             }
         }
-        Data::Enum(_) => {
+        Data::Enum(ref enum_data) => {
+            // This only copes with variants with no fields.
+            // Expands to an expression like:
+            //
+            //     format!("&(
+            //         EnumName_Variant1: {},
+            //         EnumName_Variant2: {},
+            //         EnumName_Variant3: {},
+            //     )",
+            //         Self::Variant1 as i32,
+            //         Self::Variant2 as i32,
+            //         Self::Variant3 as i32,
+            //     )
+            //
+            let fmt_recurse = enum_data.variants.iter().map(|variant| {
+                let vname = &variant.ident;
+                quote_spanned! {variant.span()=>
+                                concat!("    ",
+                                        stringify!(#name),
+                                        "_",
+                                        stringify!(#vname),
+                                        ": {},\n")
+                }
+            });
+            let fmt = quote! {
+                concat!("&(\n",
+                         #(#fmt_recurse, )*
+                         ")")
+            };
+            let recurse = enum_data.variants.iter().map(|variant| {
+                let vname = &variant.ident;
+                quote_spanned! {variant.span()=>
+                                Self::#vname as i32
+                }
+            });
             quote! {
-                "int".to_string()
+                Some(format!(
+                    #fmt,
+                    #(#recurse, )*
+                ))
             }
         }
+        Data::Union(_) => unimplemented!(),
+    }
+}
+
+/// Derive macro that implements a `from_raw_tag_value` method for the `Tag` enum.
+#[proc_macro_derive(FromRawTag)]
+pub fn derive_from_raw_tag(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    derive_from_raw_tag_internal(&input)
+}
+
+fn derive_from_raw_tag_internal(input: &DeriveInput) -> proc_macro::TokenStream {
+    let name = &input.ident;
+    let from_val = from_raw_tag(name, &input.data);
+    let expanded = quote! {
+        pub fn from_raw_tag_value(raw_tag: u32) -> #name {
+            #from_val
+        }
+    };
+    expanded.into()
+}
+
+/// Generate an expression to convert a `u32` into an instance of an fieldless enum.
+/// Assumes the existence of an `Invalid` variant as a fallback, and assumes that a
+/// `raw_tag_value` function is in scope.
+fn from_raw_tag(name: &Ident, data: &Data) -> TokenStream {
+    match data {
+        Data::Enum(enum_data) => {
+            let recurse = enum_data.variants.iter().map(|variant| {
+                let vname = &variant.ident;
+                quote_spanned! {variant.span()=>
+                                x if x == raw_tag_value(#name::#vname) => #name::#vname,
+                }
+            });
+
+            quote! {
+                match raw_tag {
+                    #(#recurse)*
+                    _ => #name::Invalid,
+                }
+            }
+        }
+        _ => unimplemented!(),
+    }
+}
+
+/// Derive macro that implements the `legacy::InnerSerialize` trait.  Using this macro requires
+/// that `InnerSerialize` and `Error` from `kmr_wire::legacy` be locally `use`d.
+#[proc_macro_derive(LegacySerialize)]
+pub fn derive_legacy_serialize(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    derive_legacy_serialize_internal(&input)
+}
+
+fn derive_legacy_serialize_internal(input: &DeriveInput) -> proc_macro::TokenStream {
+    let name = &input.ident;
+
+    let deserialize_val = deserialize_struct(&input.data);
+    let serialize_val = serialize_struct(&input.data);
+
+    let expanded = quote! {
+        impl InnerSerialize for #name {
+            fn deserialize(data: &[u8]) -> Result<(Self, &[u8]), Error> {
+                #deserialize_val
+            }
+            fn serialize_into(&self, buf: &mut Vec<u8>) -> Result<(), Error> {
+                #serialize_val
+            }
+        }
+    };
+
+    expanded.into()
+}
+
+fn deserialize_struct(data: &Data) -> TokenStream {
+    match data {
+        Data::Struct(ref data) => {
+            match data.fields {
+                Fields::Named(ref fields) => {
+                    // Expands to an expression like
+                    //
+                    //     let (x, data) = <XType>::deserialize(data)?;
+                    //     let (y, data) = <YType>::deserialize(data)?;
+                    //     let (z, data) = <ZType>::deserialize(data)?;
+                    //     Ok((Self {
+                    //             x,
+                    //             y,
+                    //             z,
+                    //     }, data))
+                    //
+                    let recurse1 = fields.named.iter().map(|f| {
+                        let name = &f.ident;
+                        let typ = &f.ty;
+                        quote_spanned! {f.span()=>
+                                        let (#name, data) = <#typ>::deserialize(data)?;
+                        }
+                    });
+                    let recurse2 = fields.named.iter().map(|f| {
+                        let name = &f.ident;
+                        quote_spanned! {f.span()=>
+                                        #name
+                        }
+                    });
+                    quote! {
+                        #(#recurse1)*
+                        Ok((Self {
+                            #(#recurse2, )*
+                        }, data))
+                    }
+                }
+                Fields::Unnamed(_) => unimplemented!(),
+                Fields::Unit => unimplemented!(),
+            }
+        }
+        Data::Enum(_) => unimplemented!(),
+        Data::Union(_) => unimplemented!(),
+    }
+}
+
+fn serialize_struct(data: &Data) -> TokenStream {
+    match data {
+        Data::Struct(ref data) => {
+            match data.fields {
+                Fields::Named(ref fields) => {
+                    // Expands to an expression like
+                    //
+                    //     self.x.serialize_into(buf)?;
+                    //     self.y.serialize_into(buf)?;
+                    //     self.z.serialize_into(buf)?;
+                    //     Ok(())
+                    //
+                    let recurse = fields.named.iter().map(|f| {
+                        let name = &f.ident;
+                        quote_spanned! {f.span()=>
+                                        self.#name.serialize_into(buf)?;
+                        }
+                    });
+                    quote! {
+                        #(#recurse)*
+                        Ok(())
+                    }
+                }
+                Fields::Unnamed(_) => unimplemented!(),
+                Fields::Unit => unimplemented!(),
+            }
+        }
+        Data::Enum(_) => unimplemented!(),
         Data::Union(_) => unimplemented!(),
     }
 }
