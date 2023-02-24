@@ -127,6 +127,7 @@ pub fn serialize(params: &[KeyParam]) -> Result<Vec<u8>, Error> {
             | KeyParam::AttestationIdProduct(v)
             | KeyParam::AttestationIdSerial(v)
             | KeyParam::AttestationIdImei(v)
+            | KeyParam::AttestationIdSecondImei(v)
             | KeyParam::AttestationIdMeid(v)
             | KeyParam::AttestationIdManufacturer(v)
             | KeyParam::AttestationIdModel(v)
@@ -165,7 +166,7 @@ pub fn serialize(params: &[KeyParam]) -> Result<Vec<u8>, Error> {
             KeyParam::Origin(v) => result.try_extend_from_slice(&(*v as u32).to_ne_bytes())?,
 
             // `u32`-holding variants.
-            KeyParam::KeySize(v) => result.try_extend_from_slice(&(v.0 as u32).to_ne_bytes())?,
+            KeyParam::KeySize(v) => result.try_extend_from_slice(&(v.0).to_ne_bytes())?,
             KeyParam::MinMacLength(v)
             | KeyParam::MaxUsesPerBoot(v)
             | KeyParam::UsageCountLimit(v)
@@ -181,10 +182,10 @@ pub fn serialize(params: &[KeyParam]) -> Result<Vec<u8>, Error> {
 
             // `u64`-holding variants.
             KeyParam::RsaPublicExponent(v) => {
-                result.try_extend_from_slice(&(v.0 as u64).to_ne_bytes())?
+                result.try_extend_from_slice(&(v.0).to_ne_bytes())?
             }
             KeyParam::UserSecureId(v) => {
-                result.try_extend_from_slice(&(*v as u64).to_ne_bytes())?
+                result.try_extend_from_slice(&(*v).to_ne_bytes())?
             }
 
             // `true`-holding variants.
@@ -222,6 +223,7 @@ pub fn serialize(params: &[KeyParam]) -> Result<Vec<u8>, Error> {
             | KeyParam::AttestationIdProduct(v)
             | KeyParam::AttestationIdSerial(v)
             | KeyParam::AttestationIdImei(v)
+            | KeyParam::AttestationIdSecondImei(v)
             | KeyParam::AttestationIdMeid(v)
             | KeyParam::AttestationIdManufacturer(v)
             | KeyParam::AttestationIdModel(v)
@@ -464,6 +466,11 @@ pub fn deserialize(data: &mut &[u8]) -> Result<Vec<KeyParam>, Error> {
             Tag::AttestationIdImei => {
                 KeyParam::AttestationIdImei(consume_blob(data, &mut next_blob_offset, blob_data)?)
             }
+            Tag::AttestationIdSecondImei => KeyParam::AttestationIdSecondImei(consume_blob(
+                data,
+                &mut next_blob_offset,
+                blob_data,
+            )?),
             Tag::AttestationIdMeid => {
                 KeyParam::AttestationIdMeid(consume_blob(data, &mut next_blob_offset, blob_data)?)
             }
@@ -554,6 +561,7 @@ pub fn param_compare(left: &KeyParam, right: &KeyParam) -> Ordering {
         (KeyParam::AttestationIdProduct(l), KeyParam::AttestationIdProduct(r)) => l.cmp(r),
         (KeyParam::AttestationIdSerial(l), KeyParam::AttestationIdSerial(r)) => l.cmp(r),
         (KeyParam::AttestationIdImei(l), KeyParam::AttestationIdImei(r)) => l.cmp(r),
+        (KeyParam::AttestationIdSecondImei(l), KeyParam::AttestationIdSecondImei(r)) => l.cmp(r),
         (KeyParam::AttestationIdMeid(l), KeyParam::AttestationIdMeid(r)) => l.cmp(r),
         (KeyParam::AttestationIdManufacturer(l), KeyParam::AttestationIdManufacturer(r)) => {
             l.cmp(r)

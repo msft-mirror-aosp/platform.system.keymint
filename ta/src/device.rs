@@ -1,15 +1,22 @@
 //! Traits representing access to device-specific information and functionality.
 
-// TODO: remove after complete implementing RKP functionality.
-#![allow(dead_code)]
+use crate::coset::{iana, AsCborValue, CoseSign1Builder, HeaderBuilder};
 use alloc::{boxed::Box, vec::Vec};
-
 use kmr_common::{
-    crypto, crypto::aes, crypto::KeyMaterial, crypto::OpaqueOr, crypto::RawKeyMaterial, keyblob,
-    log_unimpl, unimpl, Error,
+    crypto, crypto::aes, crypto::hmac, crypto::KeyMaterial, crypto::OpaqueOr, keyblob, log_unimpl,
+    unimpl, Error,
 };
-use kmr_wire::keymint;
+use kmr_wire::{keymint, rpc, secureclock::TimeStampToken, CborError};
 use log::error;
+
+use crate::rkp::serialize_cbor;
+
+/// Context used to derive the hardware backed key for computing HMAC in
+/// IRemotelyProvisionedComponent.
+pub const RPC_HMAC_KEY_CONTEXT: &[u8] = b"Key to MAC public keys";
+
+/// Length (in bytes) of the HMAC key used in IRemotelyProvisionedComponent.
+pub const RPC_HMAC_KEY_LEN: usize = 32;
 
 /// Combined collection of trait implementations that must be provided.
 pub struct Implementation<'a> {
@@ -49,7 +56,7 @@ pub struct Implementation<'a> {
 pub trait RetrieveKeyMaterial {
     /// Retrieve the root key used for derivation of a per-keyblob key encryption key (KEK), passing
     /// in any opaque context.
-    fn root_kek(&self, context: &[u8]) -> Result<RawKeyMaterial, Error>;
+    fn root_kek(&self, context: &[u8]) -> Result<OpaqueOr<hmac::Key>, Error>;
 
     /// Retrieve any opaque (but non-confidential) context needed for future calls to [`root_kek`].
     /// Context should not include confidential data (it will be stored in the clear).
@@ -59,7 +66,7 @@ pub trait RetrieveKeyMaterial {
     }
 
     /// Retrieve the key agreement key used for shared secret negotiation.
-    fn kak(&self) -> Result<aes::Key, Error>;
+    fn kak(&self) -> Result<OpaqueOr<aes::Key>, Error>;
 
     /// Install the device HMAC agreed by shared secret negotiation into hardware (optional).
     fn hmac_key_agreed(&self, _key: &crypto::hmac::Key) -> Option<Box<dyn DeviceHmac>> {
@@ -71,7 +78,14 @@ pub trait RetrieveKeyMaterial {
     fn unique_id_hbk(&self, ckdf: &dyn crypto::Ckdf) -> Result<crypto::hmac::Key, Error> {
         // By default, use CKDF on the key agreement secret to derive a key.
         let unique_id_label = b"UniqueID HBK 32B";
-        ckdf.ckdf(&self.kak()?.into(), unique_id_label, &[], 32).map(crypto::hmac::Key::new)
+        ckdf.ckdf(&self.kak()?, unique_id_label, &[], 32).map(crypto::hmac::Key::new)
+    }
+
+    /// Build the HMAC input for a [`TimeStampToken`].  The default implementation produces
+    /// data that matches the `ISecureClock` AIDL specification; this method should only be
+    /// overridden for back-compatibility reasons.
+    fn timestamp_token_mac_input(&self, token: &TimeStampToken) -> Result<Vec<u8>, Error> {
+        crate::clock::timestamp_token_mac_input(token)
     }
 }
 
@@ -155,34 +169,72 @@ pub trait BootloaderStatus {
 /// the method signatures.
 /// TODO (b/258069484): Add smoke tests to this device trait.
 pub trait RetrieveRpcArtifacts {
-    // Retrieve the hardware backed key used to compute HMAC over the attestation public keys.
-    // If a particular implementation doesn't want the hardware backed keys to leave the hardware,
-    // they can mark this as unimplemented and override the default implementation of
-    // [`compute_hmac_sha256`] below.
-    fn derive_hbk_for_hmac(&self, context: &[u8]) -> Result<crypto::hmac::Key, Error>;
+    // Retrieve secret bytes (of the given output length) derived from a hardware backed key.
+    // For a given context, the output is deterministic.
+    fn derive_bytes_from_hbk(
+        &self,
+        hkdf: &dyn crypto::Hkdf,
+        context: &[u8],
+        output_len: usize,
+    ) -> Result<Vec<u8>, Error>;
 
-    // Compute HMAC_SHA256 over the given input using a hardware backed key.
-    fn compute_hmac_sha256(&self, hmac: &dyn crypto::Hmac, input: &[u8]) -> Result<Vec<u8>, Error> {
-        let context = b"Key to MAC public keys";
-        let key = self.derive_hbk_for_hmac(context)?;
-        crypto::hmac_sha256(hmac, &key.0, input)
+    // Compute HMAC_SHA256 over the given input using a key derived from hardware.
+    fn compute_hmac_sha256(
+        &self,
+        hmac: &dyn crypto::Hmac,
+        hkdf: &dyn crypto::Hkdf,
+        input: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let secret = self.derive_bytes_from_hbk(hkdf, RPC_HMAC_KEY_CONTEXT, RPC_HMAC_KEY_LEN)?;
+        crypto::hmac_sha256(hmac, &secret, input)
     }
 
     // Retrieve the information about the DICE chain belonging to the IRPC HAL implementation.
-    fn get_dice_info(&self, test_mode: bool) -> Result<DiceInfo, Error>;
+    fn get_dice_info(&self, test_mode: rpc::TestMode) -> Result<DiceInfo, Error>;
 
     // Sign the input data with the CDI leaf private key of the IRPC HAL implementation. In IRPC V2,
     // the `data` to be signed is the [`SignedMac_structure`] in ProtectedData.aidl, when signing
-    // the ephemeral MAC key used to authenticate the public keys.
-    fn sign_data<'a>(
+    // the ephemeral MAC key used to authenticate the public keys. In IRPC V3, the `data` to be
+    // signed is the [`SignedDataSigStruct`].
+    // If a particular implementation would like to return the signature in a COSE_Sign1 message,
+    // they can mark this unimplemented and override the default implementation in the
+    // `sign_data_in_cose_sign1` method below.
+    fn sign_data(
         &self,
         ec: &dyn crypto::Ec,
         data: &[u8],
-        rpc_v2: Option<RpcV2Req<'a>>,
+        rpc_v2: Option<RpcV2Req>,
     ) -> Result<Vec<u8>, Error>;
+
+    // Sign the payload and return a COSE_Sign1 message. In IRPC V2, the `payload` is the MAC Key.
+    // In IRPC V3, the `payload` is the `Data` that the `SignedData` is parameterized with (i.e. a
+    // CBOR array containing `challenge` and `CsrPayload`).
+    fn sign_data_in_cose_sign1(
+        &self,
+        ec: &dyn crypto::Ec,
+        signing_algorithm: &CsrSigningAlgorithm,
+        payload: &[u8],
+        _aad: &[u8],
+        _rpc_v2: Option<RpcV2Req>,
+    ) -> Result<Vec<u8>, Error> {
+        let cose_sign_algorithm = match signing_algorithm {
+            CsrSigningAlgorithm::ES256 => iana::Algorithm::ES256,
+            CsrSigningAlgorithm::EdDSA => iana::Algorithm::EdDSA,
+        };
+        // Construct `SignedData`
+        let protected = HeaderBuilder::new().algorithm(cose_sign_algorithm).build();
+        let signed_data = CoseSign1Builder::new()
+            .protected(protected)
+            .payload(payload.to_vec())
+            .try_create_signature(&[], |input| self.sign_data(ec, input, None))?
+            .build();
+        let signed_data_cbor = signed_data.to_cbor_value().map_err(CborError::from)?;
+        serialize_cbor(&signed_data_cbor)
+    }
 }
 
 /// Information about the DICE chain belonging to the implementation of the IRPC HAL.
+#[derive(Clone)]
 pub struct DiceInfo {
     pub pub_dice_artifacts: PubDiceArtifacts,
     pub signing_algorithm: CsrSigningAlgorithm,
@@ -190,23 +242,25 @@ pub struct DiceInfo {
     // cases. The optional test CDI private key may be set here, if the device implementers
     // do not want to cache the test CDI private key across the calls to the `get_dice_info` and
     //`sign_data` methods when creating the CSR.
-    rpc_v2_test_cdi_priv: Option<RpcV2TestCDIPriv>,
+    pub rpc_v2_test_cdi_priv: Option<RpcV2TestCDIPriv>,
 }
 
 /// Algorithm used to sign with the CDI leaf private key.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum CsrSigningAlgorithm {
     ES256,
     EdDSA,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct PubDiceArtifacts {
     // Certificates for the UDS Pub encoded in CBOR as per [`AdditionalDKSignatures`] structure in
-    // ProtectedData.aidl for IRPC HAL version 2.
+    // ProtectedData.aidl for IRPC HAL version 2 and as per [`UdsCerts`] structure in IRPC HAL
+    // version 3.
     pub uds_certs: Vec<u8>,
     // UDS Pub and the DICE certificates encoded in CBOR/COSE as per the [`Bcc`] structure
-    // defined in ProtectedData.aidl for IRPC HAL version 2.
+    // defined in ProtectedData.aidl for IRPC HAL version 2 and as per [`DiceCertChain`] structure
+    // in IRPC HAL version 3.
     pub dice_cert_chain: Vec<u8>,
 }
 
@@ -222,11 +276,12 @@ pub enum RpcV2Req<'a> {
 
 // Struct encapsulating the optional CDI private key and the optional opaque context that may be
 // returned with `DiceInfo` in IRPC V2 test mode.
+#[derive(Clone)]
 pub struct RpcV2TestCDIPriv {
-    test_cdi_priv: Option<OpaqueOr<crypto::ec::Key>>,
+    pub test_cdi_priv: Option<OpaqueOr<crypto::ec::Key>>,
     // An optional opaque blob set by the TA, if the TA wants a mechanism to relate the
     // two requests: `get_dice_info` and `sign_data` related to the same CSR.
-    context: Vec<u8>,
+    pub context: Vec<u8>,
 }
 
 /// Marker implementation for implementations that do not support `BOOTLOADER_ONLY` keys, which
@@ -258,11 +313,11 @@ pub trait StorageKeyWrapper {
 // intended for convenience during the process of porting the KeyMint code to a new environment.
 pub struct NoOpRetrieveKeyMaterial;
 impl RetrieveKeyMaterial for NoOpRetrieveKeyMaterial {
-    fn root_kek(&self, _context: &[u8]) -> Result<RawKeyMaterial, Error> {
+    fn root_kek(&self, _context: &[u8]) -> Result<OpaqueOr<hmac::Key>, Error> {
         unimpl!();
     }
 
-    fn kak(&self) -> Result<aes::Key, Error> {
+    fn kak(&self) -> Result<OpaqueOr<aes::Key>, Error> {
         unimpl!();
     }
 }
@@ -280,19 +335,24 @@ impl RetrieveCertSigningInfo for NoOpRetrieveCertSigningInfo {
 
 pub struct NoOpRetrieveRpcArtifacts;
 impl RetrieveRpcArtifacts for NoOpRetrieveRpcArtifacts {
-    fn derive_hbk_for_hmac(&self, _context: &[u8]) -> Result<crypto::hmac::Key, Error> {
+    fn derive_bytes_from_hbk(
+        &self,
+        _hkdf: &dyn crypto::Hkdf,
+        _context: &[u8],
+        _output_len: usize,
+    ) -> Result<Vec<u8>, Error> {
         unimpl!();
     }
 
-    fn get_dice_info<'a>(&self, _test_mode: bool) -> Result<DiceInfo, Error> {
+    fn get_dice_info<'a>(&self, _test_mode: rpc::TestMode) -> Result<DiceInfo, Error> {
         unimpl!();
     }
 
-    fn sign_data<'a>(
+    fn sign_data(
         &self,
         _ec: &dyn crypto::Ec,
         _data: &[u8],
-        _rpc_v2: Option<RpcV2Req<'a>>,
+        _rpc_v2: Option<RpcV2Req>,
     ) -> Result<Vec<u8>, Error> {
         unimpl!();
     }
