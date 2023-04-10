@@ -28,7 +28,7 @@ impl<'a> crate::KeyMintTa<'a> {
 
         let context = shared_secret_context(params, local_params)?;
         let key = hmac::Key(self.imp.ckdf.ckdf(
-            &self.dev.keys.kak()?.into(),
+            &self.dev.keys.kak()?,
             kmr_wire::sharedsecret::KEY_AGREEMENT_LABEL.as_bytes(),
             &[&context],
             kmr_common::crypto::SHA256_DIGEST_LEN,
@@ -53,6 +53,9 @@ pub fn shared_secret_context(
     let mut seen = false;
     for param in params {
         result.try_extend_from_slice(&param.seed)?;
+        if param.nonce.len() != 32 {
+            return Err(km_err!(InvalidArgument, "nonce len {} not 32", param.nonce.len()));
+        }
         result.try_extend_from_slice(&param.nonce)?;
         if param == must_include {
             seen = true;

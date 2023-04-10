@@ -9,7 +9,7 @@ use core::mem::size_of;
 use core::{cell::RefCell, convert::TryFrom};
 use device::DiceInfo;
 use kmr_common::{
-    crypto::{self, hmac, RawKeyMaterial},
+    crypto::{self, hmac, OpaqueOr},
     get_bool_tag_value,
     keyblob::{self, RootOfTrustInfo, SecureDeletionSlot},
     km_err, tag, vec_try, vec_try_with_capacity, Error, FallibleAllocExt,
@@ -27,7 +27,7 @@ use kmr_wire::{
     sharedsecret::SharedSecretParameters,
     *,
 };
-use log::{debug, error, info, warn};
+use log::{error, info, trace, warn};
 
 mod cert;
 mod clock;
@@ -44,7 +44,7 @@ use operation::{OpHandle, Operation};
 mod tests;
 
 /// Maximum number of parallel operations supported when running as TEE.
-const MAX_TEE_OPERATIONS: usize = 32;
+const MAX_TEE_OPERATIONS: usize = 16;
 
 /// Maximum number of parallel operations supported when running as StrongBox.
 const MAX_STRONGBOX_OPERATIONS: usize = 4;
@@ -166,7 +166,7 @@ pub fn split_rsp(mut rsp_data: &[u8], max_size: usize) -> Result<Vec<Vec<u8>>, E
         let mut rsp = vec_try_with_capacity!(allowed_msg_length + 1)?;
         rsp.push(NEXT_MESSAGE_SIGNAL_TRUE);
         rsp.extend_from_slice(&rsp_data[..allowed_msg_length]);
-        debug!("Current response size with signalling byte: {}", rsp.len());
+        trace!("Current response size with signalling byte: {}", rsp.len());
         split_rsp.push(rsp);
         rsp_data = &rsp_data[allowed_msg_length..];
     }
@@ -594,10 +594,10 @@ impl<'a> KeyMintTa<'a> {
 
     /// Process a single serialized request, returning a serialized response.
     pub fn process(&mut self, req_data: &[u8]) -> Vec<u8> {
-        let rsp = match PerformOpReq::from_slice(req_data) {
+        let (req_code, rsp) = match PerformOpReq::from_slice(req_data) {
             Ok(req) => {
-                debug!("-> TA: received request {:?}", req);
-                self.process_req(req)
+                trace!("-> TA: received request {:?}", req.code());
+                (Some(req.code()), self.process_req(req))
             }
             Err(e) => {
                 error!("failed to decode CBOR request: {:?}", e);
@@ -605,10 +605,10 @@ impl<'a> KeyMintTa<'a> {
                 // for the `IRemotelyProvisionedComponent` or for one of the other HALs, so we don't
                 // know what numbering space the error codes are expected to be in.  Assume the
                 // shared KeyMint `ErrorCode` space.
-                error_rsp(ErrorCode::UnknownError as i32)
+                (None, error_rsp(ErrorCode::UnknownError as i32))
             }
         };
-        debug!("<- TA: send response {:?}", rsp);
+        trace!("<- TA: send response {:?} rc {}", req_code, rsp.error_code);
         match rsp.into_vec() {
             Ok(rsp_data) => rsp_data,
             Err(e) => {
@@ -1120,7 +1120,7 @@ impl<'a> KeyMintTa<'a> {
     }
 
     /// Return the root key used for key encryption.
-    fn root_kek(&self, context: &[u8]) -> Result<RawKeyMaterial, Error> {
+    fn root_kek(&self, context: &[u8]) -> Result<OpaqueOr<hmac::Key>, Error> {
         self.dev.keys.root_kek(context)
     }
 
@@ -1168,7 +1168,7 @@ fn error_rsp(error_code: i32) -> PerformOpResponse {
 
 /// Create a response structure with the given error.
 fn op_error_rsp(op: KeyMintOperation, err: Error) -> PerformOpResponse {
-    error!("failing {:?} request with error {:?}", op, err);
+    warn!("failing {:?} request with error {:?}", op, err);
     if kmr_wire::is_rpc_operation(op) {
         // The IRemotelyProvisionedComponent HAL uses a different error space than the
         // other HALs.
@@ -1178,19 +1178,13 @@ fn op_error_rsp(op: KeyMintOperation, err: Error) -> PerformOpResponse {
                 error!("encountered non-RKP error on RKP method! {:?}", err);
                 rpc::ErrorCode::Failed
             }
-            Error::Rpc(e, err_msg) => {
-                error!("Returning error code: {:?} in the response due to: {}", e, err_msg);
-                e
-            }
+            Error::Rpc(e, _) => e,
         };
         error_rsp(rpc_err as i32)
     } else {
         let hal_err = match err {
             Error::Cbor(_) | Error::Der(_) => ErrorCode::InvalidArgument,
-            Error::Hal(e, err_msg) => {
-                error!("Returning error code: {:?} in the response due to: {}", e, err_msg);
-                e
-            }
+            Error::Hal(e, _) => e,
             Error::Rpc(_, _) => {
                 error!("encountered RKP error on non-RKP method! {:?}", err);
                 ErrorCode::UnknownError

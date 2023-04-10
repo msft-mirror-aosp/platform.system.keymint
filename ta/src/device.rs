@@ -3,10 +3,10 @@
 use crate::coset::{iana, AsCborValue, CoseSign1Builder, HeaderBuilder};
 use alloc::{boxed::Box, vec::Vec};
 use kmr_common::{
-    crypto, crypto::aes, crypto::KeyMaterial, crypto::OpaqueOr, crypto::RawKeyMaterial, keyblob,
-    log_unimpl, unimpl, Error,
+    crypto, crypto::aes, crypto::hmac, crypto::KeyMaterial, crypto::OpaqueOr, keyblob, log_unimpl,
+    unimpl, Error,
 };
-use kmr_wire::{keymint, rpc, CborError};
+use kmr_wire::{keymint, rpc, secureclock::TimeStampToken, CborError};
 use log::error;
 
 use crate::rkp::serialize_cbor;
@@ -56,7 +56,7 @@ pub struct Implementation<'a> {
 pub trait RetrieveKeyMaterial {
     /// Retrieve the root key used for derivation of a per-keyblob key encryption key (KEK), passing
     /// in any opaque context.
-    fn root_kek(&self, context: &[u8]) -> Result<RawKeyMaterial, Error>;
+    fn root_kek(&self, context: &[u8]) -> Result<OpaqueOr<hmac::Key>, Error>;
 
     /// Retrieve any opaque (but non-confidential) context needed for future calls to [`root_kek`].
     /// Context should not include confidential data (it will be stored in the clear).
@@ -66,7 +66,7 @@ pub trait RetrieveKeyMaterial {
     }
 
     /// Retrieve the key agreement key used for shared secret negotiation.
-    fn kak(&self) -> Result<aes::Key, Error>;
+    fn kak(&self) -> Result<OpaqueOr<aes::Key>, Error>;
 
     /// Install the device HMAC agreed by shared secret negotiation into hardware (optional).
     fn hmac_key_agreed(&self, _key: &crypto::hmac::Key) -> Option<Box<dyn DeviceHmac>> {
@@ -78,7 +78,14 @@ pub trait RetrieveKeyMaterial {
     fn unique_id_hbk(&self, ckdf: &dyn crypto::Ckdf) -> Result<crypto::hmac::Key, Error> {
         // By default, use CKDF on the key agreement secret to derive a key.
         let unique_id_label = b"UniqueID HBK 32B";
-        ckdf.ckdf(&self.kak()?.into(), unique_id_label, &[], 32).map(crypto::hmac::Key::new)
+        ckdf.ckdf(&self.kak()?, unique_id_label, &[], 32).map(crypto::hmac::Key::new)
+    }
+
+    /// Build the HMAC input for a [`TimeStampToken`].  The default implementation produces
+    /// data that matches the `ISecureClock` AIDL specification; this method should only be
+    /// overridden for back-compatibility reasons.
+    fn timestamp_token_mac_input(&self, token: &TimeStampToken) -> Result<Vec<u8>, Error> {
+        crate::clock::timestamp_token_mac_input(token)
     }
 }
 
@@ -192,26 +199,27 @@ pub trait RetrieveRpcArtifacts {
     // If a particular implementation would like to return the signature in a COSE_Sign1 message,
     // they can mark this unimplemented and override the default implementation in the
     // `sign_data_in_cose_sign1` method below.
-    fn sign_data<'a>(
+    fn sign_data(
         &self,
         ec: &dyn crypto::Ec,
         data: &[u8],
-        rpc_v2: Option<RpcV2Req<'a>>,
+        rpc_v2: Option<RpcV2Req>,
     ) -> Result<Vec<u8>, Error>;
 
     // Sign the payload and return a COSE_Sign1 message. In IRPC V2, the `payload` is the MAC Key.
     // In IRPC V3, the `payload` is the `Data` that the `SignedData` is parameterized with (i.e. a
     // CBOR array containing `challenge` and `CsrPayload`).
-    fn sign_data_in_cose_sign1<'a>(
+    fn sign_data_in_cose_sign1(
         &self,
         ec: &dyn crypto::Ec,
         signing_algorithm: &CsrSigningAlgorithm,
         payload: &[u8],
         _aad: &[u8],
-        _rpc_v2: Option<RpcV2Req<'a>>,
+        _rpc_v2: Option<RpcV2Req>,
     ) -> Result<Vec<u8>, Error> {
         let cose_sign_algorithm = match signing_algorithm {
             CsrSigningAlgorithm::ES256 => iana::Algorithm::ES256,
+            CsrSigningAlgorithm::ES384 => iana::Algorithm::ES384,
             CsrSigningAlgorithm::EdDSA => iana::Algorithm::EdDSA,
         };
         // Construct `SignedData`
@@ -242,6 +250,7 @@ pub struct DiceInfo {
 #[derive(Clone, Copy, Debug)]
 pub enum CsrSigningAlgorithm {
     ES256,
+    ES384,
     EdDSA,
 }
 
@@ -306,11 +315,11 @@ pub trait StorageKeyWrapper {
 // intended for convenience during the process of porting the KeyMint code to a new environment.
 pub struct NoOpRetrieveKeyMaterial;
 impl RetrieveKeyMaterial for NoOpRetrieveKeyMaterial {
-    fn root_kek(&self, _context: &[u8]) -> Result<RawKeyMaterial, Error> {
+    fn root_kek(&self, _context: &[u8]) -> Result<OpaqueOr<hmac::Key>, Error> {
         unimpl!();
     }
 
-    fn kak(&self) -> Result<aes::Key, Error> {
+    fn kak(&self) -> Result<OpaqueOr<aes::Key>, Error> {
         unimpl!();
     }
 }
@@ -341,11 +350,11 @@ impl RetrieveRpcArtifacts for NoOpRetrieveRpcArtifacts {
         unimpl!();
     }
 
-    fn sign_data<'a>(
+    fn sign_data(
         &self,
         _ec: &dyn crypto::Ec,
         _data: &[u8],
-        _rpc_v2: Option<RpcV2Req<'a>>,
+        _rpc_v2: Option<RpcV2Req>,
     ) -> Result<Vec<u8>, Error> {
         unimpl!();
     }
