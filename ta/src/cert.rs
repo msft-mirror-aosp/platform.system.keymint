@@ -763,6 +763,10 @@ fn decode_value_from_bytes(
             key_param_from_asn1_integer!(UsageCountLimit, u32, tlv_bytes, key_params);
         }
         Tag::UserSecureId => {
+            // Note that the `UserSecureId` tag has tag type `ULONG_REP` indicating that it can be
+            // repeated, but the ASN.1 schema for `AuthorizationList` has this field as having type
+            // `INTEGER` not `SET OF INTEGER`. This reflects the special usage of `UserSecureId`
+            // in `importWrappedKey()` processing.
             key_param_from_asn1_integer!(UserSecureId, u64, tlv_bytes, key_params);
         }
         Tag::NoAuthRequired => {
@@ -1022,7 +1026,8 @@ impl<'a> Sequence<'a> for AuthorizationList<'a> {
         asn1_integer_datetime!(contents, self.auths, OriginationExpireDatetime);
         asn1_integer_datetime!(contents, self.auths, UsageExpireDatetime);
         asn1_integer!(contents, self.auths, UsageCountLimit);
-        asn1_integer!(contents, self.auths, UserSecureId);
+        // Skip `UserSecureId` as it's only included in the extension for
+        // importWrappedKey() cases.
         asn1_null!(contents, self.auths, NoAuthRequired);
         asn1_integer!(contents, self.auths, UserAuthType);
         asn1_integer!(contents, self.auths, AuthTimeout);
@@ -1314,6 +1319,98 @@ mod tests {
         assert_eq!(hex::encode(&got), want);
         // decode from encoded
         assert_eq!(AuthorizationList::from_der(got.as_slice()).unwrap(), authz_list);
+    }
+
+    #[test]
+    fn test_authz_list_user_secure_id_encode() {
+        // Create an authorization list that includes multiple values for SecureUserId.
+        let authz_list = AuthorizationList::new(
+            &[
+                KeyParam::Algorithm(keymint::Algorithm::Ec),
+                KeyParam::UserSecureId(42),
+                KeyParam::UserSecureId(43),
+                KeyParam::UserSecureId(44),
+            ],
+            &[],
+            None,
+            Some(RootOfTrust {
+                verified_boot_key: &[0xbbu8; 32],
+                device_locked: false,
+                verified_boot_state: VerifiedBootState::Unverified,
+                verified_boot_hash: &[0xee; 32],
+            }),
+            None,
+        )
+        .unwrap();
+        let got = authz_list.to_vec().unwrap();
+        // The `SecureUserId` values are *not* included in the generated output.
+        let want: &str = concat!(
+            "3055", // SEQUENCE len 55
+            "a203", // EXPLICIT [2]
+            "0201", // INTEGER len 1
+            "03",   // 3 (Algorithm::Ec)
+            "bf8540",
+            "4c",   // EXPLICIT [704] len 0x4c
+            "304a", // SEQUENCE len x4a
+            "0420", // OCTET STRING len 32
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "0101", // BOOLEAN len 1
+            "00",   // false
+            "0a01", // ENUMERATED len 1
+            "02",   // Unverified(2)
+            "0420", // OCTET STRING len 32
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        );
+        // encode
+        assert_eq!(hex::encode(got), want);
+    }
+
+    #[test]
+    fn test_authz_list_user_secure_id_decode() {
+        // Create a DER-encoded `AuthorizationList` that includes a `UserSecureId` value.
+        let input = hex::decode(concat!(
+            "305c",   // SEQUENCE
+            "a203",   // EXPLICIT [2] len 3
+            "0201",   // INTEGER len 1
+            "03",     // 3 (Algorithm::Ec)
+            "bf8376", // EXPLICIT [502]
+            "03",     // len 3
+            "0201",   // INTEGER len 1
+            "02",     // 2
+            "bf8540", // EXPLICIT [704]
+            "4c",     // len 0x4c
+            "304a",   // SEQUENCE len x4a
+            "0420",   // OCTET STRING len 32
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "0101", // BOOLEAN len 1
+            "00",   // false
+            "0a01", // ENUMERATED len 1
+            "02",   // Unverified(2)
+            "0420", // OCTET STRING len 32
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        ))
+        .unwrap();
+        let got = AuthorizationList::from_der(&input).unwrap();
+
+        let want = AuthorizationList::new(
+            &[KeyParam::Algorithm(keymint::Algorithm::Ec), KeyParam::UserSecureId(2)],
+            &[],
+            None,
+            Some(RootOfTrust {
+                verified_boot_key: &[0xbbu8; 32],
+                device_locked: false,
+                verified_boot_state: VerifiedBootState::Unverified,
+                verified_boot_hash: &[0xee; 32],
+            }),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(got, want);
     }
 
     #[test]
