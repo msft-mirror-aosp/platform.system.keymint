@@ -12,7 +12,9 @@ use der::{
 use der::{Decode, Encode, ErrorKind, Length};
 use flagset::FlagSet;
 use kmr_common::crypto::KeyMaterial;
-use kmr_common::{crypto, get_tag_value, km_err, tag, try_to_vec, vec_try_with_capacity, Error};
+use kmr_common::{
+    crypto, der_err, get_tag_value, km_err, tag, try_to_vec, vec_try_with_capacity, Error,
+};
 use kmr_common::{get_bool_tag_value, get_opt_tag_value, FallibleAllocExt};
 use kmr_wire::{
     keymint,
@@ -49,7 +51,8 @@ pub(crate) fn certificate<'a>(
     Ok(Certificate {
         signature_algorithm: tbs_cert.signature,
         tbs_certificate: tbs_cert,
-        signature: BitStringRef::new(0, sig_val)?,
+        signature: BitStringRef::new(0, sig_val)
+            .map_err(|e| der_err!(e, "failed to build BitStringRef"))?,
     })
 }
 
@@ -127,14 +130,17 @@ pub(crate) fn tbs_certificate<'a>(
 
     Ok(TbsCertificate {
         version: Version::V3,
-        serial_number: UIntRef::new(cert_serial)?,
+        serial_number: UIntRef::new(cert_serial)
+            .map_err(|e| der_err!(e, "failed to build serial number for {:?}", cert_serial))?,
         signature: AlgorithmIdentifier { oid: sig_alg_oid, parameters: None },
-        issuer: RdnSequence::from_der(cert_issuer)?,
+        issuer: RdnSequence::from_der(cert_issuer)
+            .map_err(|e| der_err!(e, "failed to build issuer"))?,
         validity: x509_cert::time::Validity {
             not_before: validity_time_from_datetime(not_before)?,
             not_after: validity_time_from_datetime(not_after)?,
         },
-        subject: RdnSequence::from_der(cert_subject)?,
+        subject: RdnSequence::from_der(cert_subject)
+            .map_err(|e| der_err!(e, "failed to build subject"))?,
         subject_public_key_info: spki,
         issuer_unique_id: None,
         subject_unique_id: None,
@@ -166,17 +172,26 @@ fn validity_time_from_datetime(when: DateTime) -> Result<Time, Error> {
 
         let duration = Duration::from_secs(u64::try_from(secs_since_epoch).map_err(dt_err)?);
         if duration >= MAX_UTC_TIME {
-            Ok(Time::GeneralTime(GeneralizedTime::from_unix_duration(duration)?))
+            Ok(Time::GeneralTime(
+                GeneralizedTime::from_unix_duration(duration)
+                    .map_err(|e| der_err!(e, "failed to build GeneralTime for {:?}", when))?,
+            ))
         } else {
-            Ok(Time::UtcTime(UtcTime::from_unix_duration(duration)?))
+            Ok(Time::UtcTime(
+                UtcTime::from_unix_duration(duration)
+                    .map_err(|e| der_err!(e, "failed to build UtcTime for {:?}", when))?,
+            ))
         }
     } else {
         // TODO: cope with negative offsets from Unix Epoch.
-        Ok(Time::GeneralTime(GeneralizedTime::from_unix_duration(Duration::from_secs(0))?))
+        Ok(Time::GeneralTime(
+            GeneralizedTime::from_unix_duration(Duration::from_secs(0))
+                .map_err(|e| der_err!(e, "failed to build GeneralizedTime(0) for {:?}", when))?,
+        ))
     }
 }
 
-pub(crate) fn asn1_der_encode<T: Encode>(obj: &T) -> Result<Vec<u8>, Error> {
+pub(crate) fn asn1_der_encode<T: Encode>(obj: &T) -> Result<Vec<u8>, der::Error> {
     let mut encoded_data = Vec::<u8>::new();
     obj.encode_to_vec(&mut encoded_data)?;
     Ok(encoded_data)
@@ -439,7 +454,11 @@ impl<'a> AuthorizationList<'a> {
         );
         check_attestation_id!(keygen_params, AttestationIdModel, attestation_ids.map(|v| &v.model));
 
-        let encoded_rot = if let Some(rot) = rot_info { Some(rot.to_vec()?) } else { None };
+        let encoded_rot = if let Some(rot) = rot_info {
+            Some(rot.to_vec().map_err(|e| der_err!(e, "failed to encode RoT"))?)
+        } else {
+            None
+        };
         Ok(Self {
             auths: auths.into(),
             keygen_params: keygen_params.into(),
@@ -491,12 +510,6 @@ impl<'a> AuthorizationList<'a> {
             app_id: attest_app_id,
         })
     }
-}
-
-/// Convert an error into a default `der::Error`.
-#[inline]
-fn der_err(_e: Error) -> der::Error {
-    der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
 }
 
 /// Convert an error into a `der::Error` indicating allocation failure.
@@ -763,6 +776,10 @@ fn decode_value_from_bytes(
             key_param_from_asn1_integer!(UsageCountLimit, u32, tlv_bytes, key_params);
         }
         Tag::UserSecureId => {
+            // Note that the `UserSecureId` tag has tag type `ULONG_REP` indicating that it can be
+            // repeated, but the ASN.1 schema for `AuthorizationList` has this field as having type
+            // `INTEGER` not `SET OF INTEGER`. This reflects the special usage of `UserSecureId`
+            // in `importWrappedKey()` processing.
             key_param_from_asn1_integer!(UserSecureId, u64, tlv_bytes, key_params);
         }
         Tag::NoAuthRequired => {
@@ -932,7 +949,10 @@ macro_rules! asn1_integer {
         $contents:ident, $params:expr, $variant:ident
     } => {
         {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(der_err)? {
+            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
+                log::warn!("failed to get {} value for ext", stringify!($variant));
+                der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
+            })? {
                     $contents.try_push(Box::new(ExplicitTaggedValue {
                         tag: raw_tag_value(Tag::$variant),
                         val: *val as i64
@@ -946,7 +966,10 @@ macro_rules! asn1_integer_newtype {
         $contents:ident, $params:expr, $variant:ident
     } => {
         {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(der_err)? {
+            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
+                log::warn!("failed to get {} value for ext", stringify!($variant));
+                der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
+            })? {
                     $contents.try_push(Box::new(ExplicitTaggedValue {
                         tag: raw_tag_value(Tag::$variant),
                         val: val.0 as i64
@@ -960,7 +983,10 @@ macro_rules! asn1_integer_datetime {
         $contents:ident, $params:expr, $variant:ident
     } => {
         {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(der_err)? {
+            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
+                log::warn!("failed to get {} value for ext", stringify!($variant));
+                der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
+            })? {
                     $contents.try_push(Box::new(ExplicitTaggedValue {
                         tag: raw_tag_value(Tag::$variant),
                         val: val.ms_since_epoch
@@ -974,7 +1000,10 @@ macro_rules! asn1_null {
         $contents:ident, $params:expr, $variant:ident
     } => {
         {
-            if get_bool_tag_value!($params.as_ref(), $variant).map_err(der_err)? {
+            if get_bool_tag_value!($params.as_ref(), $variant).map_err(|_e| {
+                log::warn!("failed to get {} value for ext", stringify!($variant));
+                der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
+            })? {
                     $contents.try_push(Box::new(ExplicitTaggedValue {
                         tag: raw_tag_value(Tag::$variant),
                         val: ()
@@ -988,7 +1017,10 @@ macro_rules! asn1_octet_string {
         $contents:ident, $params:expr, $variant:ident
     } => {
         {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(der_err)? {
+            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
+                log::warn!("failed to get {} value for ext", stringify!($variant));
+                der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
+            })? {
                     $contents.try_push(Box::new(ExplicitTaggedValue {
                         tag: raw_tag_value(Tag::$variant),
                         val: der::asn1::OctetStringRef::new(val)?,
@@ -1022,7 +1054,8 @@ impl<'a> Sequence<'a> for AuthorizationList<'a> {
         asn1_integer_datetime!(contents, self.auths, OriginationExpireDatetime);
         asn1_integer_datetime!(contents, self.auths, UsageExpireDatetime);
         asn1_integer!(contents, self.auths, UsageCountLimit);
-        asn1_integer!(contents, self.auths, UserSecureId);
+        // Skip `UserSecureId` as it's only included in the extension for
+        // importWrappedKey() cases.
         asn1_null!(contents, self.auths, NoAuthRequired);
         asn1_integer!(contents, self.auths, UserAuthType);
         asn1_integer!(contents, self.auths, AuthTimeout);
@@ -1314,6 +1347,98 @@ mod tests {
         assert_eq!(hex::encode(&got), want);
         // decode from encoded
         assert_eq!(AuthorizationList::from_der(got.as_slice()).unwrap(), authz_list);
+    }
+
+    #[test]
+    fn test_authz_list_user_secure_id_encode() {
+        // Create an authorization list that includes multiple values for SecureUserId.
+        let authz_list = AuthorizationList::new(
+            &[
+                KeyParam::Algorithm(keymint::Algorithm::Ec),
+                KeyParam::UserSecureId(42),
+                KeyParam::UserSecureId(43),
+                KeyParam::UserSecureId(44),
+            ],
+            &[],
+            None,
+            Some(RootOfTrust {
+                verified_boot_key: &[0xbbu8; 32],
+                device_locked: false,
+                verified_boot_state: VerifiedBootState::Unverified,
+                verified_boot_hash: &[0xee; 32],
+            }),
+            None,
+        )
+        .unwrap();
+        let got = authz_list.to_vec().unwrap();
+        // The `SecureUserId` values are *not* included in the generated output.
+        let want: &str = concat!(
+            "3055", // SEQUENCE len 55
+            "a203", // EXPLICIT [2]
+            "0201", // INTEGER len 1
+            "03",   // 3 (Algorithm::Ec)
+            "bf8540",
+            "4c",   // EXPLICIT [704] len 0x4c
+            "304a", // SEQUENCE len x4a
+            "0420", // OCTET STRING len 32
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "0101", // BOOLEAN len 1
+            "00",   // false
+            "0a01", // ENUMERATED len 1
+            "02",   // Unverified(2)
+            "0420", // OCTET STRING len 32
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        );
+        // encode
+        assert_eq!(hex::encode(got), want);
+    }
+
+    #[test]
+    fn test_authz_list_user_secure_id_decode() {
+        // Create a DER-encoded `AuthorizationList` that includes a `UserSecureId` value.
+        let input = hex::decode(concat!(
+            "305c",   // SEQUENCE
+            "a203",   // EXPLICIT [2] len 3
+            "0201",   // INTEGER len 1
+            "03",     // 3 (Algorithm::Ec)
+            "bf8376", // EXPLICIT [502]
+            "03",     // len 3
+            "0201",   // INTEGER len 1
+            "02",     // 2
+            "bf8540", // EXPLICIT [704]
+            "4c",     // len 0x4c
+            "304a",   // SEQUENCE len x4a
+            "0420",   // OCTET STRING len 32
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "0101", // BOOLEAN len 1
+            "00",   // false
+            "0a01", // ENUMERATED len 1
+            "02",   // Unverified(2)
+            "0420", // OCTET STRING len 32
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        ))
+        .unwrap();
+        let got = AuthorizationList::from_der(&input).unwrap();
+
+        let want = AuthorizationList::new(
+            &[KeyParam::Algorithm(keymint::Algorithm::Ec), KeyParam::UserSecureId(2)],
+            &[],
+            None,
+            Some(RootOfTrust {
+                verified_boot_key: &[0xbbu8; 32],
+                device_locked: false,
+                verified_boot_state: VerifiedBootState::Unverified,
+                verified_boot_hash: &[0xee; 32],
+            }),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(got, want);
     }
 
     #[test]

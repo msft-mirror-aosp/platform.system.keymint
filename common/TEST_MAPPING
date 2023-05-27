@@ -2,6 +2,12 @@
   "presubmit": [
     {
       "name": "libkmr_common_test"
+    },
+    {
+      "name": "libkmr_crypto_boring_test"
+    },
+    {
+      "name": "libkmr_keyblob_test"
     }
   ]
 }

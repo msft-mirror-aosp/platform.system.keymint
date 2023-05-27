@@ -20,17 +20,24 @@ const HMAC_KEY: &[u8] = b"IntegrityAssuredBlob0\0";
 /// Format of encrypted key blob.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthEncryptedBlobFormat {
+    /// AES-OCB
     AesOcb = 0,
+    /// AES-GCM encryption.
     AesGcmWithSwEnforced = 1,
+    /// AES-GCM encryption including secure deletion secret.
     AesGcmWithSecureDeletion = 2,
+    /// Versioned AES-GCM encryption.
     AesGcmWithSwEnforcedVersioned = 3,
+    /// Versioned AES-GCM encryption including secure deletion secret.
     AesGcmWithSecureDeletionVersioned = 4,
 }
 
 impl AuthEncryptedBlobFormat {
+    /// Indicate whether this format requires secure deletion support.
     pub fn requires_secure_deletion(&self) -> bool {
         matches!(self, Self::AesGcmWithSecureDeletion | Self::AesGcmWithSecureDeletionVersioned)
     }
+    /// Indicate whether this format is versioned.
     pub fn is_versioned(&self) -> bool {
         matches!(
             self,
@@ -42,20 +49,26 @@ impl AuthEncryptedBlobFormat {
 /// Encrypted key blob, including key characteristics.
 #[derive(Debug, PartialEq, Eq)]
 pub struct EncryptedKeyBlob {
+    /// Format of the keyblob.
     pub format: AuthEncryptedBlobFormat,
-    // IV for encryption.
+    /// IV for encryption.
     pub nonce: Vec<u8>,
-    // Encrypted key material.
+    /// Encrypted key material.
     pub ciphertext: Vec<u8>,
-    // Authenticated encryption tag.
+    /// Authenticated encryption tag.
     pub tag: Vec<u8>,
 
     // The following two fields are preset iff `format.is_versioned()`
+    /// KDF version for the key.
     pub kdf_version: Option<u32>,
+    /// Additional information for key derivation.
     pub addl_info: Option<i32>,
 
+    /// Hardware-enforced key characteristics.
     pub hw_enforced: Vec<KeyParam>,
+    /// Software-enforced key characteristics.
     pub sw_enforced: Vec<KeyParam>,
+    /// Secure deletion key slot.
     pub key_slot: Option<u32>,
 }
 
@@ -155,8 +168,11 @@ impl EncryptedKeyBlob {
 /// Plaintext key blob, with key characteristics.
 #[derive(Debug, PartialEq, Eq)]
 pub struct KeyBlob {
+    /// Raw key material.
     pub key_material: Vec<u8>,
+    /// Hardware-enforced key characteristics.
     pub hw_enforced: Vec<KeyParam>,
+    /// Software-enforced key characteristics.
     pub sw_enforced: Vec<KeyParam>,
 }
 

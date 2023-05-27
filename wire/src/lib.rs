@@ -1,5 +1,8 @@
 //! Types and macros for communication between HAL and TA
 
+// Allow missing docs in this crate as the types here are generally 1:1 with the HAL
+// interface definitions.
+#![allow(missing_docs)]
 #![no_std]
 extern crate alloc;
 

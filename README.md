@@ -5,7 +5,7 @@ This repository holds a reference implementation of the Android
 HAL](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/keymint/aidl/android/hardware/security/keymint/IKeyMintDevice.aidl?q=IKeyMintDevice.aidl),
 including closely related HAL interfaces:
 
-- [`IRemotelyProvisionedComponent`](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/keymint/aidl/android/hardware/security/keymint/IRemotelyProvisionedComponent.aidl)
+- [`IRemotelyProvisionedComponent`](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/rkp/aidl/android/hardware/security/keymint/IRemotelyProvisionedComponent.aidl)
 - [`ISharedSecret`](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/sharedsecret/aidl/android/hardware/security/sharedsecret/ISharedSecret.aidl)
 - [`ISecureClock`](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/secureclock/aidl/android/hardware/security/secureclock/ISecureClock.aidl)
 

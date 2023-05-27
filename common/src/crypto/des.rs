@@ -45,10 +45,20 @@ impl Key {
 /// Mode of DES operation.  Associated value is the nonce.
 #[derive(Clone, Copy, Debug)]
 pub enum Mode {
+    /// ECB mode with no padding.
     EcbNoPadding,
+    /// ECB mode with PKCS#7 padding.
     EcbPkcs7Padding,
-    CbcNoPadding { nonce: [u8; BLOCK_SIZE] },
-    CbcPkcs7Padding { nonce: [u8; BLOCK_SIZE] },
+    /// CBC mode with no padding.
+    CbcNoPadding {
+        /// Nonce to use.
+        nonce: [u8; BLOCK_SIZE],
+    },
+    /// CBC mode with PKCS#7 padding.
+    CbcPkcs7Padding {
+        /// Nonce to use.
+        nonce: [u8; BLOCK_SIZE],
+    },
 }
 
 impl Mode {

@@ -8,6 +8,7 @@ const OS_VERSION_PROPERTY: &str = "ro.build.version.release";
 const OS_VERSION_REGEX: &str = r"^(?P<major>\d{1,2})(\.(?P<minor>\d{1,2}))?(\.(?P<sub>\d{1,2}))?$";
 
 // The patchlevel properties are of form "YYYY-MM-DD".
+/// Name of property that holds the OS patchlevel.
 pub const OS_PATCHLEVEL_PROPERTY: &str = "ro.build.version.security_patch";
 const VENDOR_PATCHLEVEL_PROPERTY: &str = "ro.vendor.build.security_patch";
 const PATCHLEVEL_REGEX: &str = r"^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})$";
@@ -29,6 +30,7 @@ fn extract_u32(value: Option<regex::Match>) -> Result<u32, Error> {
     }
 }
 
+/// Retrieve the value of a property identified by `name`.
 pub fn get_property(name: &str) -> Result<String, Error> {
     match rustutils::system_properties::read(name) {
         Ok(Some(value)) => Ok(value),

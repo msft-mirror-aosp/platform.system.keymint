@@ -1,3 +1,4 @@
+//! BoringSSL-based implementation of AES.
 use crate::{openssl_err, openssl_err_or, ossl};
 use alloc::boxed::Box;
 use alloc::vec::Vec;

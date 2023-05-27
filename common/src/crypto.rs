@@ -1,6 +1,9 @@
 //! Abstractions and related types for accessing cryptographic primitives
 //! and related functionality.
 
+// derive(N) generates a method that is missing a docstring.
+#![allow(missing_docs)]
+
 use crate::{km_err, vec_try, vec_try_with_capacity, Error, FallibleAllocExt};
 use alloc::{
     format,
@@ -50,12 +53,19 @@ impl From<MillisecondsSinceEpoch> for kmr_wire::secureclock::Timestamp {
 /// Information for key generation.
 #[derive(Clone)]
 pub enum KeyGenInfo {
+    /// Generate an AES key of the given size.
     Aes(aes::Variant),
+    /// Generate a 3-DES key.
     TripleDes,
+    /// Generate an HMAC key of the given size.
     Hmac(KeySizeInBits),
+    /// Generate an RSA keypair of the given size using the given exponent.
     Rsa(KeySizeInBits, RsaExponent),
+    /// Generate a NIST EC keypair using the given curve.
     NistEc(ec::NistCurve),
+    /// Generate an Ed25519 keypair.
     Ed25519,
+    /// Generate an X25519 keypair.
     X25519,
 }
 
@@ -63,8 +73,11 @@ pub enum KeyGenInfo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, N)]
 #[repr(i32)]
 pub enum CurveType {
+    /// NIST curve.
     Nist = 0,
+    /// EdDSA curve.
     EdDsa = 1,
+    /// XDH curve.
     Xdh = 2,
 }
 
@@ -80,7 +93,9 @@ pub struct OpaqueKeyMaterial(pub Vec<u8>);
 /// Wrapper that holds either a key of explicit type `T`, or an opaque blob of key material.
 #[derive(Clone, PartialEq, Eq)]
 pub enum OpaqueOr<T> {
+    /// Explicit key material of the given type, available in plaintext.
     Explicit(T),
+    /// Opaque key material, either encrypted or an opaque key handle.
     Opaque(OpaqueKeyMaterial),
 }
 
@@ -112,10 +127,15 @@ impl<T> From<OpaqueKeyMaterial> for OpaqueOr<T> {
 /// known/accessible to the crypto implementation, indicated by the `OpaqueOr::Opaque` variant).
 #[derive(Clone, PartialEq, Eq)]
 pub enum KeyMaterial {
+    /// AES symmetric key.
     Aes(OpaqueOr<aes::Key>),
+    /// 3-DES symmetric key.
     TripleDes(OpaqueOr<des::Key>),
+    /// HMAC symmetric key.
     Hmac(OpaqueOr<hmac::Key>),
+    /// RSA asymmetric key.
     Rsa(OpaqueOr<rsa::Key>),
+    /// Elliptic curve asymmetric key.
     Ec(EcCurve, CurveType, OpaqueOr<ec::Key>),
 }
 
@@ -418,7 +438,9 @@ impl AsCborValue for KeyMaterial {
 /// Direction of cipher operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SymmetricOperation {
+    /// Perform encryption.
     Encrypt,
+    /// Perform decryption.
     Decrypt,
 }
 

@@ -1,43 +1,43 @@
 //! Traits representing abstractions of cryptographic functionality.
 use super::*;
-use crate::{crypto::ec::Key, explicit, keyblob, vec_try, Error};
+use crate::{crypto::ec::Key, der_err, explicit, keyblob, vec_try, Error};
 use alloc::{boxed::Box, vec::Vec};
 use der::Decode;
 use kmr_wire::{keymint, keymint::Digest, KeySizeInBits, RsaExponent};
 use log::{error, warn};
 
 /// Combined collection of trait implementations that must be provided.
-pub struct Implementation<'a> {
+pub struct Implementation {
     /// Random number generator.
-    pub rng: &'a mut dyn Rng,
+    pub rng: Box<dyn Rng>,
 
     /// A local clock, if available. If not available, KeyMint will require timestamp tokens to
     /// be provided by an external `ISecureClock` (with which it shares a common key).
-    pub clock: Option<&'a dyn MonotonicClock>,
+    pub clock: Option<Box<dyn MonotonicClock>>,
 
     /// A constant-time equality implementation.
-    pub compare: &'a dyn ConstTimeEq,
+    pub compare: Box<dyn ConstTimeEq>,
 
     /// AES implementation.
-    pub aes: &'a dyn Aes,
+    pub aes: Box<dyn Aes>,
 
     /// DES implementation.
-    pub des: &'a dyn Des,
+    pub des: Box<dyn Des>,
 
     /// HMAC implementation.
-    pub hmac: &'a dyn Hmac,
+    pub hmac: Box<dyn Hmac>,
 
     /// RSA implementation.
-    pub rsa: &'a dyn Rsa,
+    pub rsa: Box<dyn Rsa>,
 
     /// EC implementation.
-    pub ec: &'a dyn Ec,
+    pub ec: Box<dyn Ec>,
 
     /// CKDF implementation.
-    pub ckdf: &'a dyn Ckdf,
+    pub ckdf: Box<dyn Ckdf>,
 
     /// HKDF implementation.
-    pub hkdf: &'a dyn Hkdf,
+    pub hkdf: Box<dyn Hkdf>,
 }
 
 /// Abstraction of a random number generator that is cryptographically secure
@@ -347,7 +347,8 @@ pub trait Ec {
             | Key::P256(nist_key)
             | Key::P384(nist_key)
             | Key::P521(nist_key) => {
-                let ec_pvt_key = sec1::EcPrivateKey::from_der(nist_key.0.as_slice())?;
+                let ec_pvt_key = sec1::EcPrivateKey::from_der(nist_key.0.as_slice())
+                    .map_err(|e| der_err!(e, "failed to parse DER NIST EC PrivateKey"))?;
                 match ec_pvt_key.public_key {
                     Some(pub_key) => Ok(pub_key.to_vec()),
                     None => {
@@ -422,13 +423,16 @@ pub trait AccumulatingOperation {
 /// A default implementation of this trait is available (in `crypto.rs`) for any type that
 /// implements [`Hmac`].
 pub trait Hkdf {
+    /// Perform combined HKDF using the input key material in `ikm`.
     fn hkdf(&self, salt: &[u8], ikm: &[u8], info: &[u8], out_len: usize) -> Result<Vec<u8>, Error> {
         let prk = self.extract(salt, ikm)?;
         self.expand(&prk, info, out_len)
     }
 
+    /// Perform the HKDF-Extract step on the input key material in `ikm`, using optional `salt`.
     fn extract(&self, salt: &[u8], ikm: &[u8]) -> Result<OpaqueOr<hmac::Key>, Error>;
 
+    /// Perform the HKDF-Expand step using the pseudo-random key in `prk`.
     fn expand(
         &self,
         prk: &OpaqueOr<hmac::Key>,
@@ -443,6 +447,7 @@ pub trait Hkdf {
 /// Aa default implementation of this trait is available (in `crypto.rs`) for any type that
 /// implements [`AesCmac`].
 pub trait Ckdf {
+    /// Perform CKDF using the key material in `key`.
     fn ckdf(
         &self,
         key: &OpaqueOr<aes::Key>,
@@ -478,6 +483,7 @@ macro_rules! unimpl {
     };
 }
 
+/// Stub implementation of [`Rng`].
 pub struct NoOpRng;
 impl Rng for NoOpRng {
     fn add_entropy(&mut self, _data: &[u8]) {
@@ -488,6 +494,7 @@ impl Rng for NoOpRng {
     }
 }
 
+/// Stub implementation of [`ConstTimeEq`].
 #[derive(Clone)]
 pub struct InsecureEq;
 impl ConstTimeEq for InsecureEq {
@@ -497,6 +504,7 @@ impl ConstTimeEq for InsecureEq {
     }
 }
 
+/// Stub implementation of [`MonotonicClock`].
 pub struct NoOpClock;
 impl MonotonicClock for NoOpClock {
     fn now(&self) -> MillisecondsSinceEpoch {
@@ -505,6 +513,7 @@ impl MonotonicClock for NoOpClock {
     }
 }
 
+/// Stub implementation of [`Aes`].
 pub struct NoOpAes;
 impl Aes for NoOpAes {
     fn begin(
@@ -525,6 +534,7 @@ impl Aes for NoOpAes {
     }
 }
 
+/// Stub implementation of [`Des`].
 pub struct NoOpDes;
 impl Des for NoOpDes {
     fn begin(
@@ -537,6 +547,7 @@ impl Des for NoOpDes {
     }
 }
 
+/// Stub implementation of [`Hmac`].
 pub struct NoOpHmac;
 impl Hmac for NoOpHmac {
     fn begin(
@@ -548,6 +559,7 @@ impl Hmac for NoOpHmac {
     }
 }
 
+/// Stub implementation of [`Cmac`].
 pub struct NoOpAesCmac;
 impl AesCmac for NoOpAesCmac {
     fn begin(&self, _key: OpaqueOr<aes::Key>) -> Result<Box<dyn AccumulatingOperation>, Error> {
@@ -555,6 +567,7 @@ impl AesCmac for NoOpAesCmac {
     }
 }
 
+/// Stub implementation of [`Rsa`].
 pub struct NoOpRsa;
 impl Rsa for NoOpRsa {
     fn generate_key(
@@ -584,6 +597,7 @@ impl Rsa for NoOpRsa {
     }
 }
 
+/// Stub implementation of [`Ec`].
 pub struct NoOpEc;
 impl Ec for NoOpEc {
     fn generate_nist_key(
@@ -639,6 +653,7 @@ impl Ec for NoOpEc {
     }
 }
 
+/// Stub implementation of [`keyblob::SecureDeletionSecretManager`].
 pub struct NoOpSdsManager;
 impl keyblob::SecureDeletionSecretManager for NoOpSdsManager {
     fn get_or_create_factory_reset_secret(

@@ -1,3 +1,4 @@
+//! BoringSSL-based implementation of 3-DES.
 use crate::{openssl_err, ossl};
 use alloc::boxed::Box;
 use alloc::vec::Vec;

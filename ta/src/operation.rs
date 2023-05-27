@@ -150,7 +150,7 @@ impl AuthInfo {
 #[derive(Debug, Clone)]
 struct HardwareAuthenticatedToken(pub HardwareAuthToken);
 
-impl<'a> crate::KeyMintTa<'a> {
+impl crate::KeyMintTa {
     pub(crate) fn begin_operation(
         &mut self,
         purpose: KeyPurpose,
@@ -450,8 +450,9 @@ impl<'a> crate::KeyMintTa<'a> {
         } else {
             false
         };
+        let tup_available = self.dev.tup.available();
         self.with_authed_operation(op_handle, auth_token, timestamp_token, |op| {
-            if check_presence && !self.dev.tup.available() {
+            if check_presence && !tup_available {
                 return Err(km_err!(
                     ProofOfPresenceRequired,
                     "trusted proof of presence required but not available"

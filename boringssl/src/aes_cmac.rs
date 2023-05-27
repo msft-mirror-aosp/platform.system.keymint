@@ -1,3 +1,4 @@
+//! BoringSSL-based implementation of AES-CMAC.
 use crate::{malloc_err, openssl_last_err};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
