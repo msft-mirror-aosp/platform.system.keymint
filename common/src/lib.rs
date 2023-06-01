@@ -20,15 +20,22 @@ pub mod tag;
 /// General error type.
 #[derive(Debug)]
 pub enum Error {
+    /// Error from CBOR conversion.
     Cbor(CborError),
+    /// Error from ASN.1 DER conversion.
     Der(ErrorKind),
-    // The IKeyMintDevice, ISharedSecret and ISecureClock HALs all share the same numbering
-    // space for error codes, encoded here as [`kmr_wire::keymint::ErrorCode`].
+    /// Error as reported on the HAL interface.
+    ///
+    /// The `IKeyMintDevice`, `ISharedSecret` and `ISecureClock` HALs all share the same numbering
+    /// space for error codes, encoded here as [`kmr_wire::keymint::ErrorCode`].
     Hal(ErrorCode, String),
-    // The IRemotelyProvisionedComponent HAL uses its own error codes.
+    /// Error as reported on the `IRemotelyProvisionedComponent` HAL, which uses its own error
+    /// codes.
     Rpc(rpc::ErrorCode, String),
-    // For an allocation error, hold a string literal rather than an allocated String to
-    // avoid allocating in error path.
+    /// Memory allocation error.
+    ///
+    /// This holds a string literal rather than an allocated `String` to avoid allocating in an
+    /// allocation error path.
     Alloc(&'static str),
 }
 
@@ -62,6 +69,17 @@ macro_rules! alloc_err {
         $crate::Error::Alloc(
             concat!(file!(), ":", line!(), ": failed allocation of size ", stringify!($len))
         )
+    }
+}
+
+/// Macro to build an [`Error::Der`] instance from a [`der::Error`].
+#[macro_export]
+macro_rules! der_err {
+    { $err:expr, $($arg:tt)+ } => {
+        {
+            log::warn!("{}: {:?} at {:?}", format_args!($($arg)+), $err, $err.position());
+            $crate::Error::Der($err.kind())
+        }
     }
 }
 
@@ -118,7 +136,9 @@ pub fn try_to_vec<T: Clone>(s: &[T]) -> Result<Vec<T>, Error> {
 
 /// Extension trait to provide fallible-allocation variants of `Vec` methods.
 pub trait FallibleAllocExt<T> {
+    /// Try to add the `value` to the collection, failing on memory exhaustion.
     fn try_push(&mut self, value: T) -> Result<(), alloc::collections::TryReserveError>;
+    /// Try to extend the collection with the contents of `other`, failing on memory exhaustion.
     fn try_extend_from_slice(
         &mut self,
         other: &[T],
@@ -164,12 +184,6 @@ impl From<CborError> for Error {
 impl From<cbor::value::Error> for Error {
     fn from(e: cbor::value::Error) -> Self {
         Self::Cbor(e.into())
-    }
-}
-
-impl From<der::Error> for Error {
-    fn from(e: der::Error) -> Self {
-        Error::Der(e.kind())
     }
 }
 

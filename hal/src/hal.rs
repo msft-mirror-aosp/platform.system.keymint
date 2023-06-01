@@ -69,20 +69,26 @@ pub fn tag_type(tag: Tag) -> TagType {
 
 /// Local equivalent of `From` trait, with a different name to avoid clashes.
 pub trait Fromm<T>: Sized {
+    /// Convert `val` into type `Self`.
     fn fromm(val: T) -> Self;
 }
 /// Local equivalent of `TryFrom` trait, with a different name to avoid clashes.
 pub trait TryFromm<T>: Sized {
+    /// Error type emitted on conversion failure.
     type Error;
+    /// Try to convert `val` into type `Self`.
     fn try_fromm(val: T) -> Result<Self, Self::Error>;
 }
 /// Local equivalent of `Into` trait, with a different name to avoid clashes.
 pub trait Innto<T> {
+    /// Convert `self` into type `T`.
     fn innto(self) -> T;
 }
 /// Local equivalent of `TryInto` trait, with a different name to avoid clashes.
 pub trait TryInnto<T> {
+    /// Error type emitted on conversion failure.
     type Error;
+    /// Try to convert `self` into type `T`.
     fn try_innto(self) -> Result<T, Self::Error>;
 }
 /// Blanket implementation of `Innto` from `Fromm`

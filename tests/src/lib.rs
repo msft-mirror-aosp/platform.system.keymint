@@ -7,7 +7,7 @@ use kmr_common::crypto::{
 };
 use kmr_common::{keyblob, keyblob::SlotPurpose};
 use kmr_ta::device::{SigningAlgorithm, SigningKey, SigningKeyType};
-use kmr_wire::keymint::Digest;
+use kmr_wire::{keymint::Digest, rpc};
 use std::collections::HashMap;
 use x509_cert::der::{Decode, Encode};
 
@@ -575,4 +575,22 @@ pub fn test_signing_cert_parse<T: kmr_ta::device::RetrieveCertSigningInfo>(
             }
         }
     }
+}
+
+/// Simple smoke test for an `RetrieveRpcArtifacts` trait implementation.
+pub fn test_retrieve_rpc_artifacts<T: kmr_ta::device::RetrieveRpcArtifacts>(
+    rpc: T,
+    hmac: &dyn Hmac,
+    hkdf: &dyn Hkdf,
+) {
+    assert!(rpc.get_dice_info(rpc::TestMode(false)).is_ok());
+
+    let context = b"abcdef";
+    let data1 = rpc.derive_bytes_from_hbk(hkdf, context, 16).expect("failed to derive from HBK");
+    let data2 = rpc.derive_bytes_from_hbk(hkdf, context, 16).expect("failed to derive from HBK");
+    assert_eq!(data1, data2, "derive_bytes_from_hbk() method should be deterministic");
+
+    let data1 = rpc.compute_hmac_sha256(hmac, hkdf, context).expect("failed to perform HMAC");
+    let data2 = rpc.compute_hmac_sha256(hmac, hkdf, context).expect("failed to perform HMAC");
+    assert_eq!(data1, data2, "compute_hmac_sha256() method should be deterministic");
 }

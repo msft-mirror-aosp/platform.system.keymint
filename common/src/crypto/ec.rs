@@ -1,7 +1,7 @@
 //! Functionality related to elliptic curve support.
 
 use super::{CurveType, KeyMaterial, OpaqueOr};
-use crate::{km_err, try_to_vec, Error, FallibleAllocExt};
+use crate::{der_err, km_err, try_to_vec, Error, FallibleAllocExt};
 use alloc::vec::Vec;
 use der::{AnyRef, Decode};
 use kmr_wire::{coset, keymint::EcCurve, rpc, KeySizeInBits};
@@ -56,14 +56,18 @@ pub const ALGO_PARAM_P521_OID: pkcs8::ObjectIdentifier =
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(i32)]
 pub enum NistCurve {
+    /// P-224
     P224 = 0,
+    /// P-256
     P256 = 1,
+    /// P-384
     P384 = 2,
+    /// P-521
     P521 = 3,
 }
 
 impl NistCurve {
-    // Curve coordinate size in bytes.
+    /// Curve coordinate size in bytes.
     pub fn coord_len(&self) -> usize {
         match self {
             NistCurve::P224 => 28,
@@ -167,6 +171,7 @@ impl OpaqueOr<Key> {
         })
     }
 
+    /// Generate a `COSE_Key` for the public key.
     pub fn public_cose_key(
         &self,
         ec: &dyn super::Ec,
@@ -233,17 +238,25 @@ impl OpaqueOr<Key> {
 /// Elliptic curve private key material.
 #[derive(Clone, PartialEq, Eq)]
 pub enum Key {
+    /// P-224 private key.
     P224(NistKey),
+    /// P-256 private key.
     P256(NistKey),
+    /// P-384 private key.
     P384(NistKey),
+    /// P-521 private key.
     P521(NistKey),
+    /// Ed25519 private key.
     Ed25519(Ed25519Key),
+    /// X25519 private key.
     X25519(X25519Key),
 }
 
 /// Indication of the purpose for a COSE key.
 pub enum CoseKeyPurpose {
+    /// ECDH key agreement.
     Agree,
+    /// ECDSA signature generation.
     Sign,
 }
 
@@ -296,8 +309,8 @@ impl Key {
 #[derive(Clone, PartialEq, Eq, ZeroizeOnDrop)]
 pub struct NistKey(pub Vec<u8>);
 
-// Helper function to return the (x,y) coordinates, given the public key as a SEC-1 encoded
-// uncompressed point. 0x04: uncompressed, followed by x || y coordinates.
+/// Helper function to return the (x,y) coordinates, given the public key as a SEC-1 encoded
+/// uncompressed point. 0x04: uncompressed, followed by x || y coordinates.
 pub fn coordinates_from_pub_key(
     pub_key: Vec<u8>,
     curve: NistCurve,
@@ -351,15 +364,17 @@ pub fn curve_to_key_size(curve: EcCurve) -> KeySizeInBits {
 
 /// Import an NIST EC key in SEC1 ECPrivateKey format.
 pub fn import_sec1_private_key(data: &[u8]) -> Result<KeyMaterial, Error> {
-    let ec_key = sec1::EcPrivateKey::from_der(data)?;
-    let ec_parameters = ec_key.parameters.ok_or(km_err!(
-        InvalidArgument,
-        "sec1 formatted EC private key didn't have a parameters field"
-    ))?;
-    let parameters_oid = ec_parameters.named_curve().ok_or(km_err!(
-        InvalidArgument,
-        "couldn't retrieve parameters oid from sec1 ECPrivateKey formatted ec key parameters"
-    ))?;
+    let ec_key = sec1::EcPrivateKey::from_der(data)
+        .map_err(|e| der_err!(e, "failed to parse ECPrivateKey"))?;
+    let ec_parameters = ec_key.parameters.ok_or_else(|| {
+        km_err!(InvalidArgument, "sec1 formatted EC private key didn't have a parameters field")
+    })?;
+    let parameters_oid = ec_parameters.named_curve().ok_or_else(|| {
+        km_err!(
+            InvalidArgument,
+            "couldn't retrieve parameters oid from sec1 ECPrivateKey formatted ec key parameters"
+        )
+    })?;
     let algorithm =
         AlgorithmIdentifier { oid: X509_NIST_OID, parameters: Some(AnyRef::from(&parameters_oid)) };
     let pkcs8_key = pkcs8::PrivateKeyInfo::new(algorithm, data);

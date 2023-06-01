@@ -6,7 +6,7 @@ use kmr_common::{crypto, crypto::hmac, km_err, vec_try, Error, FallibleAllocExt}
 use kmr_wire::{keymint::Digest, sharedsecret::SharedSecretParameters};
 use log::info;
 
-impl<'a> crate::KeyMintTa<'a> {
+impl crate::KeyMintTa {
     pub(crate) fn get_shared_secret_params(&mut self) -> Result<SharedSecretParameters, Error> {
         if self.shared_secret_params.is_none() {
             let mut nonce = vec_try![0u8; 32]?;

@@ -2,8 +2,16 @@ use super::*;
 use crate::{
     binder,
     hal::keymint::{ErrorCode::ErrorCode, IKeyMintDevice::IKeyMintDevice},
+    keymint::MAX_CBOR_OVERHEAD,
 };
-use kmr_wire::keymint::{NEXT_MESSAGE_SIGNAL_FALSE, NEXT_MESSAGE_SIGNAL_TRUE};
+use kmr_wire::{
+    keymint::{
+        HardwareAuthToken, HardwareAuthenticatorType, NEXT_MESSAGE_SIGNAL_FALSE,
+        NEXT_MESSAGE_SIGNAL_TRUE,
+    },
+    secureclock::{TimeStampToken, Timestamp},
+    FinishRequest, PerformOpReq,
+};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]
@@ -85,6 +93,36 @@ fn test_method_err_roundtrip() {
     let status = result.unwrap_err();
     assert_eq!(status.exception_code(), binder::ExceptionCode::SERVICE_SPECIFIC);
     assert_eq!(status.service_specific_error(), ErrorCode::UNSUPPORTED_PURPOSE.0);
+}
+
+#[test]
+fn test_overhead_size() {
+    let largest_op_req = PerformOpReq::OperationFinish(FinishRequest {
+        op_handle: 0x7fffffff,
+        input: Some(Vec::new()),
+        signature: Some(vec![0; 132]),
+        auth_token: Some(HardwareAuthToken {
+            challenge: 0x7fffffff,
+            user_id: 0x7fffffff,
+            authenticator_id: 0x7fffffff,
+            authenticator_type: HardwareAuthenticatorType::Password,
+            timestamp: Timestamp { milliseconds: 0x7fffffff },
+            mac: vec![0; 32],
+        }),
+        timestamp_token: Some(TimeStampToken {
+            challenge: 0x7fffffff,
+            timestamp: Timestamp { milliseconds: 0x7fffffff },
+            mac: vec![0; 32],
+        }),
+        confirmation_token: Some(vec![0; 32]),
+    });
+    let data = largest_op_req.into_vec().unwrap();
+    assert!(
+        data.len() < MAX_CBOR_OVERHEAD,
+        "expect largest serialized empty message (size {}) to be smaller than {}",
+        data.len(),
+        MAX_CBOR_OVERHEAD
+    );
 }
 
 #[test]

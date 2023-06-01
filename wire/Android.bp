@@ -23,7 +23,7 @@ rust_library {
     host_supported: true,
     vendor_available: true,
     edition: "2021",
-    lints: "vendor",
+    lints: "android",
     rustlibs: [
         "libciborium",
         "libciborium_io",

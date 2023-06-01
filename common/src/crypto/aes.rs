@@ -17,16 +17,22 @@ pub const GCM_NONCE_SIZE: usize = 12; // 96 bits
 /// AES variant.
 #[derive(Clone)]
 pub enum Variant {
+    /// AES-128
     Aes128,
+    /// AES-192
     Aes192,
+    /// AES-256
     Aes256,
 }
 
 /// An AES-128, AES-192 or AES-256 key.
 #[derive(Clone, PartialEq, Eq, ZeroizeOnDrop)]
 pub enum Key {
+    /// AES-128
     Aes128([u8; 16]),
+    /// AES-192
     Aes192([u8; 24]),
+    /// AES-256
     Aes256([u8; 32]),
 }
 
@@ -58,14 +64,30 @@ impl Key {
 /// Mode of AES plain cipher operation.  Associated value is the nonce.
 #[derive(Clone, Copy, Debug)]
 pub enum CipherMode {
+    /// ECB mode with no padding.
     EcbNoPadding,
+    /// ECB mode with PKCS#7 padding.
     EcbPkcs7Padding,
-    CbcNoPadding { nonce: [u8; BLOCK_SIZE] },
-    CbcPkcs7Padding { nonce: [u8; BLOCK_SIZE] },
-    Ctr { nonce: [u8; BLOCK_SIZE] },
+    /// CBC mode with no padding.
+    CbcNoPadding {
+        /// Nonce to use.
+        nonce: [u8; BLOCK_SIZE],
+    },
+    /// CBC mode with PKCS#7 padding.
+    CbcPkcs7Padding {
+        /// Nonce to use.
+        nonce: [u8; BLOCK_SIZE],
+    },
+    /// CTR mode with the given nonce.
+    Ctr {
+        /// Nonce to use.
+        nonce: [u8; BLOCK_SIZE],
+    },
 }
 
-/// Mode of AES-GCM operation.  Associated value is the nonce.
+/// Mode of AES-GCM operation.  Associated value is the nonce, size of
+/// tag is indicated by the variant name.
+#[allow(missing_docs)]
 #[derive(Clone, Copy, Debug)]
 pub enum GcmMode {
     GcmTag12 { nonce: [u8; GCM_NONCE_SIZE] },
@@ -78,7 +100,9 @@ pub enum GcmMode {
 /// Mode of AES operation.
 #[derive(Clone, Copy, Debug)]
 pub enum Mode {
+    /// Perform unauthenticated cipher operation.
     Cipher(CipherMode),
+    /// Perform authenticated cipher with additional data operation.
     Aead(GcmMode),
 }
 

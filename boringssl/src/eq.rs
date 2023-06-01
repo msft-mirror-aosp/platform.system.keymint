@@ -1,3 +1,4 @@
+//! BoringSSL-based implementation of constant-time comparisons.
 use kmr_common::crypto;
 
 /// Constant time comparator based on BoringSSL.

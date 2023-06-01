@@ -19,7 +19,7 @@ package {
 rust_defaults {
     name: "kmr_hal_defaults",
     edition: "2021",
-    lints: "vendor",
+    lints: "android",
     defaults: [
         "keymint_use_latest_hal_aidl_rust",
     ],

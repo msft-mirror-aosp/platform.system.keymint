@@ -19,7 +19,7 @@ package {
 rust_defaults {
     name: "kmr_tests_defaults",
     edition: "2021",
-    lints: "vendor",
+    lints: "android",
     rustlibs: [
         "libciborium",
         "libenv_logger",
@@ -49,17 +49,17 @@ rust_library_host {
     ],
 }
 
-// TODO(b/204562227): Rust host unit tests work locally but fail in CI.
-//rust_test_host {
-//    name: "libkmr_keyblob_test",
-//    srcs: ["tests/keyblob_test.rs"],
-//    defaults: [
-//        "kmr_tests_defaults",
-//    ],
-//    rustlibs: [
-//        "libkmr_crypto_boring",
-//    ],
-//}
+rust_test_host {
+    name: "libkmr_keyblob_test",
+    srcs: ["tests/keyblob_test.rs"],
+    defaults: [
+        "kmr_tests_defaults",
+    ],
+    rustlibs: [
+        "libkmr_crypto_boring",
+    ],
+    test_suites: ["general-tests"],
+}
 
 rust_binary_host {
     name: "kmr_auth_keyblob_parse",

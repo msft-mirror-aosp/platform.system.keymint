@@ -21,7 +21,7 @@ rust_library_host {
     crate_name: "kmr_ta",
     srcs: ["src/lib.rs"],
     edition: "2021",
-    lints: "vendor",
+    lints: "android",
     vendor_available: true,
     rustlibs: [
         "libciborium",

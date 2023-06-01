@@ -1,3 +1,4 @@
+//! BoringSSL-based implementation of elliptic curve functionality.
 use crate::{cvt, cvt_p, digest_into_openssl, openssl_err, openssl_last_err, ossl};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
