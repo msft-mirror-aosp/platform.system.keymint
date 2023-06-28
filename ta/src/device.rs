@@ -201,6 +201,13 @@ pub trait RetrieveRpcArtifacts {
     /// If a particular implementation would like to return the signature in a COSE_Sign1 message,
     /// they can mark this unimplemented and override the default implementation in the
     /// `sign_data_in_cose_sign1` method below.
+    ///
+    /// The signature produced by this method should be in a format suitable for COSE structures:
+    /// - Ed25519 signatures are encoded as-is.
+    /// - NIST signatures are encoded as (r||s), with each value left-padded with zeroes to
+    ///   the coordinate length.  Note that this is a *different* format than is emitted by
+    ///   the `kmr_common::crypto::Ec` trait.
+    /// (The `kmr_common::crypto::ec::to_cose_signature()` function can help with this.)
     fn sign_data(
         &self,
         ec: &dyn crypto::Ec,
