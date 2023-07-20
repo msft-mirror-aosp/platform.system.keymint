@@ -1,9 +1,9 @@
 //! Functionality related to elliptic curve support.
 
 use super::{CurveType, KeyMaterial, OpaqueOr};
-use crate::{der_err, km_err, try_to_vec, Error, FallibleAllocExt};
+use crate::{der_err, km_err, try_to_vec, vec_try, Error, FallibleAllocExt};
 use alloc::vec::Vec;
-use der::{AnyRef, Decode};
+use der::{AnyRef, Decode, Encode, Sequence};
 use kmr_wire::{coset, keymint::EcCurve, rpc, KeySizeInBits};
 use spki::{AlgorithmIdentifier, SubjectPublicKeyInfo};
 use zeroize::ZeroizeOnDrop;
@@ -480,4 +480,146 @@ pub fn import_raw_x25519_key(data: &[u8]) -> Result<KeyMaterial, Error> {
         km_err!(InvalidInputLength, "import X25519 key of incorrect len {}", data.len())
     })?;
     Ok(KeyMaterial::Ec(EcCurve::Curve25519, CurveType::Xdh, Key::X25519(X25519Key(key)).into()))
+}
+
+/// Convert a signature as emitted from the `Ec` trait into the form needed for
+/// a `COSE_Sign1`.
+pub fn to_cose_signature(curve: EcCurve, sig: Vec<u8>) -> Result<Vec<u8>, Error> {
+    match curve {
+        EcCurve::P224 | EcCurve::P256 | EcCurve::P384 | EcCurve::P521 => {
+            // NIST curve signatures are emitted as a DER-encoded `SEQUENCE`.
+            let der_sig = NistSignature::from_der(&sig)
+                .map_err(|e| km_err!(UnknownError, "failed to parse DER signature: {:?}", e))?;
+            // COSE expects signature of (r||s) with each value left-padded with zeros to coordinate
+            // size.
+            let nist_curve = NistCurve::try_from(curve)?;
+            let l = nist_curve.coord_len();
+            let mut sig = vec_try![0; 2 * l]?;
+            let r = der_sig.r.as_bytes();
+            let s = der_sig.s.as_bytes();
+            let r_offset = l - r.len();
+            let s_offset = l + l - s.len();
+            sig[r_offset..r_offset + r.len()].copy_from_slice(r);
+            sig[s_offset..s_offset + s.len()].copy_from_slice(s);
+            Ok(sig)
+        }
+        EcCurve::Curve25519 => {
+            // Ed25519 signatures can be used as-is (RFC 8410 section 6)
+            Ok(sig)
+        }
+    }
+}
+
+/// Convert a signature as used in a `COSE_Sign1` into the form needed for the `Ec` trait.
+pub fn from_cose_signature(curve: EcCurve, sig: &[u8]) -> Result<Vec<u8>, Error> {
+    match curve {
+        EcCurve::P224 | EcCurve::P256 | EcCurve::P384 | EcCurve::P521 => {
+            // COSE signatures are (r||s) with each value left-padded with zeros to coordinate size.
+            let nist_curve = NistCurve::try_from(curve)?;
+            let l = nist_curve.coord_len();
+            if sig.len() != 2 * l {
+                return Err(km_err!(
+                    UnknownError,
+                    "unexpected len {} for {:?} COSE signature value",
+                    sig.len(),
+                    nist_curve
+                ));
+            }
+
+            // NIST curve signatures need to be emitted as a DER-encoded `SEQUENCE`.
+            let der_sig = NistSignature {
+                r: der::asn1::UIntRef::new(&sig[..l])
+                    .map_err(|e| km_err!(UnknownError, "failed to build INTEGER: {:?}", e))?,
+                s: der::asn1::UIntRef::new(&sig[l..])
+                    .map_err(|e| km_err!(UnknownError, "failed to build INTEGER: {:?}", e))?,
+            };
+            der_sig
+                .to_vec()
+                .map_err(|e| km_err!(UnknownError, "failed to encode signature SEQUENCE: {:?}", e))
+        }
+        EcCurve::Curve25519 => {
+            // Ed25519 signatures can be used as-is (RFC 8410 section 6)
+            try_to_vec(sig)
+        }
+    }
+}
+
+/// DER-encoded signature from a NIST curve (RFC 3279 section 2.2.3):
+/// ```asn1
+/// Ecdsa-Sig-Value  ::=  SEQUENCE  {
+///      r     INTEGER,
+///      s     INTEGER
+/// }
+/// ```
+#[derive(Sequence)]
+struct NistSignature<'a> {
+    r: der::asn1::UIntRef<'a>,
+    s: der::asn1::UIntRef<'a>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_sig_decode() {
+        let sig_data = hex::decode("3045022001b309d5eeffa5d550bde27630f9fc7f08492e4617bc158da08b913414cf675b022100fcdca2e77d036c33fa78f4a892b98569358d83c047a7d8a74ce6fe12fbf919c6").unwrap();
+        let sig = NistSignature::from_der(&sig_data).expect("sequence should decode");
+        assert_eq!(
+            hex::encode(sig.r.as_bytes()),
+            "01b309d5eeffa5d550bde27630f9fc7f08492e4617bc158da08b913414cf675b"
+        );
+        assert_eq!(
+            hex::encode(sig.s.as_bytes()),
+            "fcdca2e77d036c33fa78f4a892b98569358d83c047a7d8a74ce6fe12fbf919c6"
+        );
+    }
+
+    #[test]
+    fn test_longer_sig_transmute() {
+        let nist_sig_data = hex::decode(concat!(
+            "30", // SEQUENCE
+            "45", // len
+            "02", // INTEGER
+            "20", // len = 32
+            "01b309d5eeffa5d550bde27630f9fc7f08492e4617bc158da08b913414cf675b",
+            "02", // INTEGER
+            "21", // len = 33 (high bit set so leading zero needed)
+            "00fcdca2e77d036c33fa78f4a892b98569358d83c047a7d8a74ce6fe12fbf919c6"
+        ))
+        .unwrap();
+        let cose_sig_data = to_cose_signature(EcCurve::P256, nist_sig_data.clone()).unwrap();
+        assert_eq!(
+            concat!(
+                "01b309d5eeffa5d550bde27630f9fc7f08492e4617bc158da08b913414cf675b",
+                "fcdca2e77d036c33fa78f4a892b98569358d83c047a7d8a74ce6fe12fbf919c6"
+            ),
+            hex::encode(&cose_sig_data),
+        );
+        let got_nist_sig = from_cose_signature(EcCurve::P256, &cose_sig_data).unwrap();
+        assert_eq!(got_nist_sig, nist_sig_data);
+    }
+    #[test]
+    fn test_short_sig_transmute() {
+        let nist_sig_data = hex::decode(concat!(
+            "30", // SEQUENCE
+            "43", // len x44
+            "02", // INTEGER
+            "1e", // len = 30
+            "09d5eeffa5d550bde27630f9fc7f08492e4617bc158da08b913414cf675b",
+            "02", // INTEGER
+            "21", // len = 33 (high bit set so leading zero needed)
+            "00fcdca2e77d036c33fa78f4a892b98569358d83c047a7d8a74ce6fe12fbf919c6"
+        ))
+        .unwrap();
+        let cose_sig_data = to_cose_signature(EcCurve::P256, nist_sig_data.clone()).unwrap();
+        assert_eq!(
+            concat!(
+                "000009d5eeffa5d550bde27630f9fc7f08492e4617bc158da08b913414cf675b",
+                "fcdca2e77d036c33fa78f4a892b98569358d83c047a7d8a74ce6fe12fbf919c6"
+            ),
+            hex::encode(&cose_sig_data),
+        );
+        let got_nist_sig = from_cose_signature(EcCurve::P256, &cose_sig_data).unwrap();
+        assert_eq!(got_nist_sig, nist_sig_data);
+    }
 }
