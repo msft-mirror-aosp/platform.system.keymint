@@ -88,18 +88,9 @@ fn process(filename: &str, hex: bool) {
     let algo_val = get_tag_value!(&combined, Algorithm, ErrorCode::InvalidArgument)
         .expect("characteristics missing algorithm");
 
-    // To disinguish between Ed25519 and X25519, need to examine the purpose for the key.
-    // Look for AgreeKey as it cannot be combined with other purposes.
-    let primary_purpose = combined
-        .iter()
-        .filter_map(
-            |param| if let KeyParam::Purpose(purpose) = param { Some(*purpose) } else { None },
-        )
-        .next();
-
     let raw_key = keyblob.key_material.clone();
     let key_material = match algo_val {
-        Algorithm::Aes => KeyMaterial::Aes(aes::Key::new(keyblob.key_material).unwrap().into()),
+        Algorithm::Aes => KeyMaterial::Aes(aes::Key::new(raw_key).unwrap().into()),
         Algorithm::TripleDes => KeyMaterial::TripleDes(
             des::Key(raw_key.try_into().expect("Incorrect length for 3DES key")).into(),
         ),
@@ -128,20 +119,7 @@ fn process(filename: &str, hex: bool) {
                     ec::Key::P521(ec::NistKey(raw_key)).into(),
                 ),
                 EcCurve::Curve25519 => {
-                    let key = raw_key.try_into().expect("curve25519 key of wrong size");
-                    if primary_purpose == Some(keymint::KeyPurpose::AgreeKey) {
-                        KeyMaterial::Ec(
-                            EcCurve::Curve25519,
-                            CurveType::Xdh,
-                            ec::Key::X25519(ec::X25519Key(key)).into(),
-                        )
-                    } else {
-                        KeyMaterial::Ec(
-                            EcCurve::Curve25519,
-                            CurveType::EdDsa,
-                            ec::Key::Ed25519(ec::Ed25519Key(key)).into(),
-                        )
-                    }
+                    ec::import_pkcs8_key(&raw_key).expect("curve25519 key in PKCS#8 format")
                 }
             }
         }
