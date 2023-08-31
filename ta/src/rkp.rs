@@ -17,8 +17,8 @@ use kmr_wire::{
     cbor,
     cbor::cbor,
     keymint::{
-        Algorithm, DateTime, Digest, EcCurve, KeyParam, KeyPurpose, SecurityLevel,
-        VerifiedBootState,
+        Algorithm, Digest, EcCurve, KeyParam, KeyPurpose, SecurityLevel, VerifiedBootState,
+        UNDEFINED_NOT_AFTER, UNDEFINED_NOT_BEFORE,
     },
     read_to_value, rpc,
     rpc::{
@@ -37,8 +37,8 @@ const RPC_P256_KEYGEN_PARAMS: [KeyParam; 8] = [
     KeyParam::EcCurve(EcCurve::P256),
     KeyParam::NoAuthRequired,
     KeyParam::Digest(Digest::Sha256),
-    KeyParam::CertificateNotBefore(DateTime { ms_since_epoch: 0 }),
-    KeyParam::CertificateNotAfter(DateTime { ms_since_epoch: 253402300799000 }),
+    KeyParam::CertificateNotBefore(UNDEFINED_NOT_BEFORE),
+    KeyParam::CertificateNotAfter(UNDEFINED_NOT_AFTER),
 ];
 
 const MAX_CHALLENGE_SIZE_V2: usize = 64;

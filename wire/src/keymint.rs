@@ -41,6 +41,12 @@ pub const DEFAULT_CERT_SUBJECT: &[u8] = &[
 pub const NEXT_MESSAGE_SIGNAL_TRUE: u8 = 0b00000001u8;
 pub const NEXT_MESSAGE_SIGNAL_FALSE: u8 = 0b00000000u8;
 
+/// We use Unix epoch as the start date of an undefined certificate validity period.
+pub const UNDEFINED_NOT_BEFORE: DateTime = DateTime { ms_since_epoch: 0 };
+/// Per RFC 5280 4.1.2.5, an undefined expiration (not-after) field should be set to
+/// 9999-12-31T23:59:59Z.
+pub const UNDEFINED_NOT_AFTER: DateTime = DateTime { ms_since_epoch: 253402300799000 };
+
 /// Possible verified boot state values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, N, AsCborValue)]
 pub enum VerifiedBootState {
