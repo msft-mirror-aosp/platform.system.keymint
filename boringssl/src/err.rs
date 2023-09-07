@@ -8,10 +8,8 @@ use log::error;
 /// Map an OpenSSL `Error` into a KeyMint `ErrorCode` value.
 pub(crate) fn map_openssl_err(err: &openssl::error::Error) -> ErrorCode {
     let code = err.code();
-    let reason = unsafe {
-        // Safety: no pointers involved.
-        ffi::ERR_GET_REASON_RUST(code)
-    };
+    // Safety: no pointers involved.
+    let reason = unsafe { ffi::ERR_GET_REASON_RUST(code) };
 
     // Global error reasons.
     match reason {

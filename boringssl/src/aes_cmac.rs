@@ -15,8 +15,8 @@ impl crypto::AesCmac for BoringAesCmac {
         key: OpaqueOr<crypto::aes::Key>,
     ) -> Result<Box<dyn crypto::AccumulatingOperation>, Error> {
         let key = explicit!(key)?;
+        // Safety: all of the `ffi::EVP_aes_<N>_cbc` functions return a non-null valid pointer.
         let (cipher, k) = unsafe {
-            // Safety: all of the `ffi::EVP_aes_<N>_cbc` functions return non-null result.
             match &key {
                 crypto::aes::Key::Aes128(k) => (ffi::EVP_aes_128_cbc(), &k[..]),
                 crypto::aes::Key::Aes192(k) => (ffi::EVP_aes_192_cbc(), &k[..]),
@@ -25,18 +25,17 @@ impl crypto::AesCmac for BoringAesCmac {
         };
 
         let op = BoringAesCmacOperation {
-            ctx: unsafe {
-                // Safety: raw pointer is immediately checked for null below.
-                ffi::CMAC_CTX_new()
-            },
+            // Safety: raw pointer is immediately checked for null below, and BoringSSL only emits
+            // valid pointers or null.
+            ctx: unsafe { ffi::CMAC_CTX_new() },
         };
         if op.ctx.is_null() {
             return Err(malloc_err!());
         }
 
+        // Safety: `op.ctx` is known non-null and valid, as is `cipher`.  `key_len` is length of
+        // `key.0`, which is a valid `Vec<u8>`.
         let result = unsafe {
-            // Safety: `op.ctx` is known non-null, as is `cipher`.  `key_len` is length of `key.0`,
-            // which is a valid `Vec<u8>`.
             ffi::CMAC_Init(
                 op.ctx,
                 k.as_ptr() as *const libc::c_void,
@@ -59,15 +58,15 @@ impl crypto::AesCmac for BoringAesCmac {
 /// BoringSSL does not support the `EVP_PKEY_CMAC` implementations that are used in the rust-openssl
 /// crate.
 pub struct BoringAesCmacOperation {
-    // Safety: `ctx` is always non-null except for initial error path in `begin()`
+    // Safety: `ctx` is always non-null and valid except for initial error path in `begin()`
     ctx: *mut ffi::CMAC_CTX,
 }
 
 impl core::ops::Drop for BoringAesCmacOperation {
     fn drop(&mut self) {
+        // Safety: `self.ctx` might be null (in the error path when `ffi::CMAC_CTX_new` fails)
+        // but `ffi::CMAC_CTX_free` copes with null.
         unsafe {
-            // Safety: `self.ctx` might be null (in the error path when `ffi::CMAC_CTX_new` fails)
-            // but `ffi::CMAC_CTX_free` copes with null.
             ffi::CMAC_CTX_free(self.ctx);
         }
     }
@@ -75,10 +74,8 @@ impl core::ops::Drop for BoringAesCmacOperation {
 
 impl crypto::AccumulatingOperation for BoringAesCmacOperation {
     fn update(&mut self, data: &[u8]) -> Result<(), Error> {
-        let result = unsafe {
-            // Safety: `self.ctx` is non-null, and `data` is a valid slice.
-            ffi::CMAC_Update(self.ctx, data.as_ptr(), data.len())
-        };
+        // Safety: `self.ctx` is non-null and valid, and `data` is a valid slice.
+        let result = unsafe { ffi::CMAC_Update(self.ctx, data.as_ptr(), data.len()) };
         if result != 1 {
             return Err(openssl_last_err());
         }
@@ -88,8 +85,9 @@ impl crypto::AccumulatingOperation for BoringAesCmacOperation {
     fn finish(self: Box<Self>) -> Result<Vec<u8>, Error> {
         let mut output_len: usize = crypto::aes::BLOCK_SIZE;
         let mut output = vec_try![0; crypto::aes::BLOCK_SIZE]?;
+        // Safety: `self.ctx` is non-null and valid; `output_len` is correct size of `output`
+        // buffer.
         let result = unsafe {
-            // Safety: `self.ctx` is non-null; `output_len` is correct size of `output` buffer.
             ffi::CMAC_Final(self.ctx, output.as_mut_ptr(), &mut output_len as *mut usize)
         };
         if result != 1 {

@@ -175,15 +175,17 @@ pub struct BoringRsaDigestSignOperation {
     // because the FFI-allocated data doesn't move.
     pkey: openssl::pkey::PKey<openssl::pkey::Private>,
 
-    // Safety invariant: both `pctx` and `md_ctx` are non-`nullptr` once item is constructed.
+    // Safety invariant: both `pctx` and `md_ctx` are non-`nullptr` (and valid and non-aliased) once
+    // item is constructed.
     md_ctx: *mut ffi::EVP_MD_CTX,
     pctx: *mut ffi::EVP_PKEY_CTX,
 }
 
 impl Drop for BoringRsaDigestSignOperation {
     fn drop(&mut self) {
+        // Safety: `md_ctx` is non-`nullptr` and valid due to invariant. `pctx` is owned by the
+        // `md_ctx`, so no need to explicitly free it.
         unsafe {
-            // pctx is owned by the md_ctx, so no need to explicitly free it.
             ffi::EVP_MD_CTX_free(self.md_ctx);
         }
     }
@@ -199,6 +201,8 @@ impl BoringRsaDigestSignOperation {
         let rsa_key = ossl!(openssl::rsa::Rsa::private_key_from_der(&key.0))?;
         let pkey = ossl!(openssl::pkey::PKey::from_rsa(rsa_key))?;
 
+        // Safety: all raw pointers are non-`nullptr` (and valid and non-aliasing) if returned
+        // without error from BoringSSL entrypoints.
         unsafe {
             let mut op = BoringRsaDigestSignOperation {
                 pkey,
@@ -206,7 +210,6 @@ impl BoringRsaDigestSignOperation {
                 pctx: ptr::null_mut(),
             };
 
-            // Safety: `op.md_ctx` must be non-`nullptr` to reach here.
             let r = ffi::EVP_DigestSignInit(
                 op.md_ctx,
                 &mut op.pctx,
@@ -221,16 +224,17 @@ impl BoringRsaDigestSignOperation {
                 return Err(km_err!(UnknownError, "no PCTX!"));
             }
 
-            // Safety: `op.pctx` is not `nullptr`.
+            // Safety: `op.pctx` is not `nullptr` and is valid.
             cvt(ffi::EVP_PKEY_CTX_set_rsa_padding(op.pctx, padding.as_raw()))?;
 
             if let SignMode::PssPadding(digest) = mode {
                 let digest_len = (kmr_common::tag::digest_len(digest)? / 8) as libc::c_int;
-                // Safety: `op.pctx` is not `nullptr`.
+                // Safety: `op.pctx` is not `nullptr` and is valid.
                 cvt(ffi::EVP_PKEY_CTX_set_rsa_pss_saltlen(op.pctx, digest_len))?;
             }
 
-            // Safety invariant: both `pctx` and `md_ctx` are non-`nullptr` on success.
+            // Safety invariant: both `pctx` and `md_ctx` are non-`nullptr` and valid pointers on
+            // success.
             Ok(op)
         }
     }
@@ -238,8 +242,8 @@ impl BoringRsaDigestSignOperation {
 
 impl crypto::AccumulatingOperation for BoringRsaDigestSignOperation {
     fn update(&mut self, data: &[u8]) -> Result<(), Error> {
+        // Safety: `data` is a valid slice, and `self.md_ctx` is non-`nullptr` and valid.
         unsafe {
-            // Safety: `data` is a valid slice, and `self.md_ctx` is non-`nullptr`.
             cvt(ffi::EVP_DigestUpdate(self.md_ctx, data.as_ptr() as *const _, data.len()))?;
         }
         Ok(())
@@ -247,14 +251,15 @@ impl crypto::AccumulatingOperation for BoringRsaDigestSignOperation {
 
     fn finish(self: Box<Self>) -> Result<Vec<u8>, Error> {
         let mut max_siglen = 0;
+        // Safety: `self.md_ctx` is non-`nullptr` and valid.
         unsafe {
-            // Safety: `self.md_ctx` is non-`nullptr`.
             cvt(ffi::EVP_DigestSignFinal(self.md_ctx, ptr::null_mut(), &mut max_siglen))?;
         }
         let mut buf = vec_try![0; max_siglen]?;
         let mut actual_siglen = max_siglen;
+        // Safety: `self.md_ctx` is non-`nullptr` and valid, and `buf` does have `actual_siglen`
+        // bytes.
         unsafe {
-            // Safety: `self.md_ctx` is non-`nullptr`, and `buf` does have `actual_siglen` bytes.
             cvt(ffi::EVP_DigestSignFinal(
                 self.md_ctx,
                 buf.as_mut_ptr() as *mut _,

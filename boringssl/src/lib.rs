@@ -1,8 +1,4 @@
 //! Implementations of [`kmr_common::crypto`] traits based on BoringSSL.
-
-// TODO(b/290018030): Remove this and add proper safety comments.
-#![allow(clippy::undocumented_unsafe_blocks)]
-
 #![no_std]
 
 extern crate alloc;
