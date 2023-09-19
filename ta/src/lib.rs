@@ -997,7 +997,7 @@ impl KeyMintTa {
 
     fn delete_all_keys(&mut self) -> Result<(), Error> {
         if let Some(sdd_mgr) = &mut self.dev.sdd_mgr {
-            error!("secure deleting all keys! device unlikely to survive reboot!");
+            error!("secure deleting all keys -- device likely to need factory reset!");
             sdd_mgr.delete_all();
         }
         Ok(())
