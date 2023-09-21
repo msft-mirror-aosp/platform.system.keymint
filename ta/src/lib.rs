@@ -997,7 +997,7 @@ impl KeyMintTa {
 
     fn delete_all_keys(&mut self) -> Result<(), Error> {
         if let Some(sdd_mgr) = &mut self.dev.sdd_mgr {
-            error!("secure deleting all keys! device unlikely to survive reboot!");
+            error!("secure deleting all keys -- device likely to need factory reset!");
             sdd_mgr.delete_all();
         }
         Ok(())
@@ -1006,6 +1006,8 @@ impl KeyMintTa {
     fn destroy_attestation_ids(&mut self) -> Result<(), Error> {
         match self.dev.attest_ids.as_mut() {
             Some(attest_ids) => {
+                // Drop any cached copies too.
+                *self.attestation_id_info.borrow_mut() = None;
                 error!("destroying all device attestation IDs!");
                 attest_ids.destroy_all()
             }

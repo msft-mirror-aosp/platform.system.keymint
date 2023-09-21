@@ -224,9 +224,9 @@ impl crypto::AccumulatingOperation for BoringEcAgreeOperation {
                 }
 
                 let mut sig = vec_try![0; ffi::X25519_SHARED_KEY_LEN as usize]?;
+                // Safety: all pointer arguments need to point to 32-byte memory areas, enforced
+                // above and in the definition of [`ec::X25519Key`].
                 let result = unsafe {
-                    // Safety: all pointer arguments need to point to 32-byte memory areas, enforced
-                    // above and in the definition of [`ec::X25519Key`].
                     ffi::X25519(sig.as_mut_ptr(), &key.0 as *const u8, peer_key_data.as_ptr())
                 };
                 if result == 1 {
@@ -249,17 +249,17 @@ pub struct BoringEcDigestSignOperation {
     // because the FFI-allocated data doesn't move.
     pkey: openssl::pkey::PKey<openssl::pkey::Private>,
 
-    // Safety invariant: both `pctx` and `md_ctx` are non-`nullptr` once item is constructed.
+    // Safety invariant: both `pctx` and `md_ctx` are non-`nullptr` and valid once item is
+    // constructed.
     md_ctx: *mut ffi::EVP_MD_CTX,
     pctx: *mut ffi::EVP_PKEY_CTX,
 }
 
 impl Drop for BoringEcDigestSignOperation {
     fn drop(&mut self) {
+        // Safety: `EVP_MD_CTX_free()` handles `nullptr`, so it's fine to drop a partly-constructed
+        // item.  `pctx` is owned by the `md_ctx`, so no need to explicitly free it.
         unsafe {
-            // Safety: `EVP_MD_CTX_free()` handles `nullptr`, so it's fine to drop a
-            // partly-constructed item.  `pctx` is owned by the `md_ctx`, so no need to explicitly
-            // free it.
             ffi::EVP_MD_CTX_free(self.md_ctx);
         }
     }
@@ -271,6 +271,8 @@ impl BoringEcDigestSignOperation {
         let ec_key = ossl!(private_key_from_der_for_group(&key.0, group.as_ref()))?;
         let pkey = ossl!(openssl::pkey::PKey::from_ec_key(ec_key))?;
 
+        // Safety: each of the raw pointers have to be non-nullptr (and thus valid, as BoringSSL
+        // emits only valid pointers or nullptr) to get to the point where they're used.
         unsafe {
             let mut op = BoringEcDigestSignOperation {
                 pkey,
@@ -278,7 +280,6 @@ impl BoringEcDigestSignOperation {
                 pctx: ptr::null_mut(),
             };
 
-            // Safety: `op.md_ctx` must be non-`nullptr` to reach here.
             let r = ffi::EVP_DigestSignInit(
                 op.md_ctx,
                 &mut op.pctx,
@@ -292,7 +293,7 @@ impl BoringEcDigestSignOperation {
             if op.pctx.is_null() {
                 return Err(km_err!(UnknownError, "no PCTX!"));
             }
-            // Safety invariant: both `pctx` and `md_ctx` are non-`nullptr` on success.
+            // Safety invariant: both `pctx` and `md_ctx` are non-`nullptr` and valid on success.
             Ok(op)
         }
     }
@@ -300,8 +301,8 @@ impl BoringEcDigestSignOperation {
 
 impl crypto::AccumulatingOperation for BoringEcDigestSignOperation {
     fn update(&mut self, data: &[u8]) -> Result<(), Error> {
+        // Safety: `data` is a valid slice, and `self.md_ctx` is non-`nullptr` and valid.
         unsafe {
-            // Safety: `data` is a valid slice, and `self.md_ctx` is non-`nullptr`.
             cvt(ffi::EVP_DigestUpdate(self.md_ctx, data.as_ptr() as *const _, data.len()))?;
         }
         Ok(())
@@ -309,14 +310,15 @@ impl crypto::AccumulatingOperation for BoringEcDigestSignOperation {
 
     fn finish(self: Box<Self>) -> Result<Vec<u8>, Error> {
         let mut max_siglen = 0;
+        // Safety: `self.md_ctx` is non-`nullptr` and valid.
         unsafe {
-            // Safety: `self.md_ctx` is non-`nullptr`.
             cvt(ffi::EVP_DigestSignFinal(self.md_ctx, ptr::null_mut(), &mut max_siglen))?;
         }
         let mut buf = vec_try![0; max_siglen]?;
         let mut actual_siglen = max_siglen;
+        // Safety: `self.md_ctx` is non-`nullptr` and valid, and `buf` does have `actual_siglen`
+        // bytes.
         unsafe {
-            // Safety: `self.md_ctx` is non-`nullptr`, and `buf` does have `actual_siglen` bytes.
             cvt(ffi::EVP_DigestSignFinal(
                 self.md_ctx,
                 buf.as_mut_ptr() as *mut _,

@@ -19,10 +19,9 @@ impl crypto::Hmac for BoringHmac {
     ) -> Result<Box<dyn crypto::AccumulatingOperation>, Error> {
         let key = explicit!(key)?;
         let op = BoringHmacOperation {
-            ctx: unsafe {
-                // Safety: raw pointer is immediately checked for null below.
-                ffi::HMAC_CTX_new()
-            },
+            // Safety: BoringSSL emits either null or a valid raw pointer, and the value is
+            // immediately checked for null below.
+            ctx: unsafe { ffi::HMAC_CTX_new() },
         };
         if op.ctx.is_null() {
             return Err(malloc_err!());
@@ -34,9 +33,9 @@ impl crypto::Hmac for BoringHmac {
         #[cfg(not(soong))]
         let key_len = key.0.len() as i32;
 
+        // Safety: `op.ctx` is known non-null and valid, as is the result of
+        // `digest_into_openssl_ffi()`.  `key_len` is length of `key.0`, which is a valid `Vec<u8>`.
         let result = unsafe {
-            // Safety: `op.ctx` is known non-null, as is the result of `digest_into_openssl_ffi`.
-            // `key_len` is length of `key.0`, which is a valid `Vec<u8>`.
             ffi::HMAC_Init_ex(
                 op.ctx,
                 key.0.as_ptr() as *const libc::c_void,
@@ -59,15 +58,15 @@ impl crypto::Hmac for BoringHmac {
 /// BoringSSL does not support the `EVP_PKEY_HMAC` implementations that are used in the rust-openssl
 /// crate.
 pub struct BoringHmacOperation {
-    // Safety: `ctx` is always non-null except for initial error path in `begin()`
+    // Safety: `ctx` is always non-null and valid except for initial error path in `begin()`
     ctx: *mut ffi::HMAC_CTX,
 }
 
 impl core::ops::Drop for BoringHmacOperation {
     fn drop(&mut self) {
+        // Safety: `self.ctx` might be null (in the error path when `ffi::HMAC_CTX_new` fails)
+        // but `ffi::HMAC_CTX_free` copes with null.
         unsafe {
-            // Safety: `self.ctx` might be null (in the error path when `ffi::HMAC_CTX_new` fails)
-            // but `ffi::HMAC_CTX_free` copes with null.
             ffi::HMAC_CTX_free(self.ctx);
         }
     }
@@ -75,10 +74,8 @@ impl core::ops::Drop for BoringHmacOperation {
 
 impl crypto::AccumulatingOperation for BoringHmacOperation {
     fn update(&mut self, data: &[u8]) -> Result<(), Error> {
-        let result = unsafe {
-            // Safety: `self.ctx` is non-null, and `data` is a valid slice.
-            ffi::HMAC_Update(self.ctx, data.as_ptr(), data.len())
-        };
+        // Safety: `self.ctx` is non-null and valid, and `data` is a valid slice.
+        let result = unsafe { ffi::HMAC_Update(self.ctx, data.as_ptr(), data.len()) };
         if result != 1 {
             return Err(openssl_last_err());
         }
@@ -89,8 +86,10 @@ impl crypto::AccumulatingOperation for BoringHmacOperation {
         let mut output_len = ffi::EVP_MAX_MD_SIZE as u32;
         let mut output = vec_try![0; ffi::EVP_MAX_MD_SIZE as usize]?;
 
+        // Safety: `self.ctx` is non-null and valid; `output_len` is correct size of `output`
+        // buffer.
         let result = unsafe {
-            // Safety: `self.ctx` is non-null; `output_len` is correct size of `output` buffer.
+            // (force line break for safety lint limitation)
             ffi::HMAC_Final(self.ctx, output.as_mut_ptr(), &mut output_len as *mut u32)
         };
         if result != 1 {
@@ -103,8 +102,8 @@ impl crypto::AccumulatingOperation for BoringHmacOperation {
 
 /// Translate a [`keymint::Digest`] into a raw [`ffi::EVD_MD`].
 fn digest_into_openssl_ffi(digest: Digest) -> Result<*const ffi::EVP_MD, Error> {
+    // Safety: all of the `EVP_<digest>` functions return a non-null valid pointer.
     unsafe {
-        // Safety: all of the `EVP_<digest>` functions return a non-null result.
         match digest {
             Digest::Md5 => Ok(ffi::EVP_md5()),
             Digest::Sha1 => Ok(ffi::EVP_sha1()),
