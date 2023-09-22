@@ -1,0 +1,10 @@
+{
+  "postsubmit": [
+    {
+      "name": "VtsAidlKeyMintTargetTest"
+    },
+    {
+      "name": "VtsHalRemotelyProvisionedComponentTargetTest"
+    }
+  ]
+}
