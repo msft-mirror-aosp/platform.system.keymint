@@ -77,7 +77,7 @@ impl crypto::Ec for BoringEc {
         let pkey = ossl!(openssl::pkey::PKey::generate_ed25519())?;
         let key = ossl!(pkey.raw_private_key())?;
         let key: [u8; ec::CURVE25519_PRIV_KEY_LEN] = key.try_into().map_err(|e| {
-            km_err!(UnknownError, "generated Ed25519 key of unexpected size: {:?}", e)
+            km_err!(UnsupportedKeySize, "generated Ed25519 key of unexpected size: {:?}", e)
         })?;
         let key = Key::Ed25519(ec::Ed25519Key(key));
         Ok(crypto::KeyMaterial::Ec(EcCurve::Curve25519, CurveType::EdDsa, key.into()))
@@ -91,7 +91,7 @@ impl crypto::Ec for BoringEc {
         let pkey = ossl!(openssl::pkey::PKey::generate_x25519())?;
         let key = ossl!(pkey.raw_private_key())?;
         let key: [u8; ec::CURVE25519_PRIV_KEY_LEN] = key.try_into().map_err(|e| {
-            km_err!(UnknownError, "generated X25519 key of unexpected size: {:?}", e)
+            km_err!(UnsupportedKeySize, "generated X25519 key of unexpected size: {:?}", e)
         })?;
         let key = Key::X25519(ec::X25519Key(key));
         Ok(crypto::KeyMaterial::Ec(EcCurve::Curve25519, CurveType::Xdh, key.into()))
@@ -163,7 +163,9 @@ impl crypto::Ec for BoringEc {
                 }
             }
             Key::Ed25519(key) => Ok(Box::new(BoringEd25519SignOperation::new(key)?)),
-            Key::X25519(_) => Err(km_err!(UnknownError, "X25519 key not valid for signing")),
+            Key::X25519(_) => {
+                Err(km_err!(IncompatibleAlgorithm, "X25519 key not valid for signing"))
+            }
         }
     }
 }
@@ -217,7 +219,7 @@ impl crypto::AccumulatingOperation for BoringEcAgreeOperation {
                 let peer_key_data = ossl!(peer_key.raw_public_key())?;
                 if peer_key_data.len() != ffi::X25519_PUBLIC_VALUE_LEN as usize {
                     return Err(km_err!(
-                        UnknownError,
+                        UnsupportedKeySize,
                         "peer raw key invalid length {}",
                         peer_key_data.len()
                     ));
@@ -236,8 +238,10 @@ impl crypto::AccumulatingOperation for BoringEcAgreeOperation {
                 }
             }
             #[cfg(not(soong))]
-            Key::X25519(_) => Err(km_err!(UnknownError, "X25519 not supported in cargo")),
-            Key::Ed25519(_) => Err(km_err!(UnknownError, "Ed25519 key not valid for agreement")),
+            Key::X25519(_) => Err(km_err!(UnsupportedEcCurve, "X25519 not supported in cargo")),
+            Key::Ed25519(_) => {
+                Err(km_err!(IncompatibleAlgorithm, "Ed25519 key not valid for agreement"))
+            }
         }
     }
 }
@@ -291,7 +295,7 @@ impl BoringEcDigestSignOperation {
                 return Err(openssl_last_err());
             }
             if op.pctx.is_null() {
-                return Err(km_err!(UnknownError, "no PCTX!"));
+                return Err(km_err!(BoringSslError, "no PCTX!"));
             }
             // Safety invariant: both `pctx` and `md_ctx` are non-`nullptr` and valid on success.
             Ok(op)
@@ -423,7 +427,7 @@ fn nist_key_to_group(key: &ec::Key) -> Result<openssl::ec::EcGroup, Error> {
         ec::Key::P384(_) => Nid::SECP384R1,
         ec::Key::P521(_) => Nid::SECP521R1,
         ec::Key::Ed25519(_) | ec::Key::X25519(_) => {
-            return Err(km_err!(UnknownError, "no NIST group for curve25519 key"))
+            return Err(km_err!(UnsupportedEcCurve, "no NIST group for curve25519 key"))
         }
     })
     .map_err(openssl_err!("failed to determine EcGroup"))

@@ -318,7 +318,7 @@ pub fn coordinates_from_pub_key(
     let coord_len = curve.coord_len();
     if pub_key.len() != (1 + 2 * coord_len) {
         return Err(km_err!(
-            UnknownError,
+            UnsupportedKeySize,
             "unexpected SEC1 pubkey len of {} for {:?}",
             pub_key.len(),
             curve
@@ -326,7 +326,7 @@ pub fn coordinates_from_pub_key(
     }
     if pub_key[0] != SEC1_UNCOMPRESSED_PREFIX {
         return Err(km_err!(
-            UnknownError,
+            UnsupportedKeySize,
             "unexpected SEC1 pubkey initial byte {} for {:?}",
             pub_key[0],
             curve
@@ -489,7 +489,7 @@ pub fn to_cose_signature(curve: EcCurve, sig: Vec<u8>) -> Result<Vec<u8>, Error>
         EcCurve::P224 | EcCurve::P256 | EcCurve::P384 | EcCurve::P521 => {
             // NIST curve signatures are emitted as a DER-encoded `SEQUENCE`.
             let der_sig = NistSignature::from_der(&sig)
-                .map_err(|e| km_err!(UnknownError, "failed to parse DER signature: {:?}", e))?;
+                .map_err(|e| km_err!(EncodingError, "failed to parse DER signature: {:?}", e))?;
             // COSE expects signature of (r||s) with each value left-padded with zeros to coordinate
             // size.
             let nist_curve = NistCurve::try_from(curve)?;
@@ -519,7 +519,7 @@ pub fn from_cose_signature(curve: EcCurve, sig: &[u8]) -> Result<Vec<u8>, Error>
             let l = nist_curve.coord_len();
             if sig.len() != 2 * l {
                 return Err(km_err!(
-                    UnknownError,
+                    EncodingError,
                     "unexpected len {} for {:?} COSE signature value",
                     sig.len(),
                     nist_curve
@@ -529,13 +529,13 @@ pub fn from_cose_signature(curve: EcCurve, sig: &[u8]) -> Result<Vec<u8>, Error>
             // NIST curve signatures need to be emitted as a DER-encoded `SEQUENCE`.
             let der_sig = NistSignature {
                 r: der::asn1::UIntRef::new(&sig[..l])
-                    .map_err(|e| km_err!(UnknownError, "failed to build INTEGER: {:?}", e))?,
+                    .map_err(|e| km_err!(EncodingError, "failed to build INTEGER: {:?}", e))?,
                 s: der::asn1::UIntRef::new(&sig[l..])
-                    .map_err(|e| km_err!(UnknownError, "failed to build INTEGER: {:?}", e))?,
+                    .map_err(|e| km_err!(EncodingError, "failed to build INTEGER: {:?}", e))?,
             };
             der_sig
                 .to_vec()
-                .map_err(|e| km_err!(UnknownError, "failed to encode signature SEQUENCE: {:?}", e))
+                .map_err(|e| km_err!(EncodingError, "failed to encode signature SEQUENCE: {:?}", e))
         }
         EcCurve::Curve25519 => {
             // Ed25519 signatures can be used as-is (RFC 8410 section 6)

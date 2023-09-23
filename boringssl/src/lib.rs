@@ -36,7 +36,7 @@ pub(crate) fn map_openssl_errstack(errs: &openssl::error::ErrorStack) -> ErrorCo
     let errors = errs.errors();
     if errors.is_empty() {
         error!("BoringSSL error requested but none available!");
-        return ErrorCode::UnknownError;
+        return ErrorCode::BoringSslError;
     }
     let err = &errors[0]; // safe: length checked above
     map_openssl_err(err)
@@ -45,7 +45,7 @@ pub(crate) fn map_openssl_errstack(errs: &openssl::error::ErrorStack) -> ErrorCo
 /// Stub function for mapping an OpenSSL `ErrorStack` into a KeyMint [`ErrorCode`] value.
 #[cfg(not(soong))]
 fn map_openssl_err(_err: &openssl::error::Error) -> ErrorCode {
-    ErrorCode::UnknownError
+    ErrorCode::BoringSslError
 }
 
 /// Macro to auto-generate error mapping around invocations of `openssl` methods.

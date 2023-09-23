@@ -259,6 +259,9 @@ pub enum ErrorCode {
     Unimplemented = -100,
     VersionMismatch = -101,
     UnknownError = -1000,
+    // Implementer's namespace for error codes starts at -10000.
+    EncodingError = -20000,
+    BoringSslError = -30000,
 }
 try_from_n!(ErrorCode);
 

@@ -17,12 +17,12 @@ pub(crate) fn map_openssl_err(err: &openssl::error::Error) -> ErrorCode {
         ffi::ERR_R_SHOULD_NOT_HAVE_BEEN_CALLED
         | ffi::ERR_R_PASSED_NULL_PARAMETER
         | ffi::ERR_R_INTERNAL_ERROR
-        | ffi::ERR_R_OVERFLOW => return ErrorCode::UnknownError,
+        | ffi::ERR_R_OVERFLOW => return ErrorCode::BoringSslError,
         _ => {}
     }
 
     match ffi::ERR_GET_LIB(code) as u32 {
-        ffi::ERR_LIB_USER => ErrorCode::try_from(reason).unwrap_or(ErrorCode::UnknownError),
+        ffi::ERR_LIB_USER => ErrorCode::try_from(reason).unwrap_or(ErrorCode::BoringSslError),
         ffi::ERR_LIB_EVP => translate_evp_error(reason),
         ffi::ERR_LIB_ASN1 => translate_asn1_error(reason),
         ffi::ERR_LIB_CIPHER => translate_cipher_error(reason),
@@ -31,7 +31,7 @@ pub(crate) fn map_openssl_err(err: &openssl::error::Error) -> ErrorCode {
         ffi::ERR_LIB_RSA => translate_rsa_error(reason),
         _ => {
             error!("unknown BoringSSL error code {}", code);
-            ErrorCode::UnknownError
+            ErrorCode::BoringSslError
         }
     }
 }
@@ -50,14 +50,14 @@ fn translate_evp_error(reason: i32) -> ErrorCode {
         ffi::EVP_R_DIFFERENT_PARAMETERS | ffi::EVP_R_DECODE_ERROR => ErrorCode::InvalidArgument,
 
         ffi::EVP_R_DIFFERENT_KEY_TYPES => ErrorCode::IncompatibleAlgorithm,
-        _ => ErrorCode::UnknownError,
+        _ => ErrorCode::BoringSslError,
     }
 }
 
 fn translate_asn1_error(reason: i32) -> ErrorCode {
     match reason {
         ffi::ASN1_R_ENCODE_ERROR => ErrorCode::InvalidArgument,
-        _ => ErrorCode::UnknownError,
+        _ => ErrorCode::BoringSslError,
     }
 }
 
@@ -73,7 +73,7 @@ fn translate_cipher_error(reason: i32) -> ErrorCode {
         ffi::CIPHER_R_BAD_DECRYPT => ErrorCode::InvalidArgument,
 
         ffi::CIPHER_R_INVALID_KEY_LENGTH => ErrorCode::InvalidKeyBlob,
-        _ => ErrorCode::UnknownError,
+        _ => ErrorCode::BoringSslError,
     }
 }
 fn translate_pkcs8_error(reason: i32) -> ErrorCode {
@@ -88,14 +88,14 @@ fn translate_pkcs8_error(reason: i32) -> ErrorCode {
 
         ffi::PKCS8_R_ENCODE_ERROR => ErrorCode::InvalidArgument,
 
-        _ => ErrorCode::UnknownError,
+        _ => ErrorCode::BoringSslError,
     }
 }
 fn translate_x509v3_error(reason: i32) -> ErrorCode {
     match reason {
         ffi::X509V3_R_UNKNOWN_OPTION => ErrorCode::UnsupportedAlgorithm,
 
-        _ => ErrorCode::UnknownError,
+        _ => ErrorCode::BoringSslError,
     }
 }
 fn translate_rsa_error(reason: i32) -> ErrorCode {
@@ -107,6 +107,6 @@ fn translate_rsa_error(reason: i32) -> ErrorCode {
         ffi::RSA_R_DATA_TOO_LARGE_FOR_MODULUS | ffi::RSA_R_DATA_TOO_LARGE => {
             ErrorCode::InvalidArgument
         }
-        _ => ErrorCode::UnknownError,
+        _ => ErrorCode::BoringSslError,
     }
 }

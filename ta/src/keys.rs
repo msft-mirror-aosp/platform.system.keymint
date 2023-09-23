@@ -98,9 +98,10 @@ impl crate::KeyMintTa {
             Entry::Vacant(e) => {
                 // Retrieve and store the cert chain information (as this is public).
                 let chain = self.dev.sign_info.cert_chain(key_type)?;
-                let issuer = cert::extract_subject(
-                    chain.get(0).ok_or_else(|| km_err!(UnknownError, "empty attestation chain"))?,
-                )?;
+                let issuer =
+                    cert::extract_subject(chain.get(0).ok_or_else(|| {
+                        km_err!(KeymintNotConfigured, "empty attestation chain")
+                    })?)?;
                 e.insert(AttestationChainInfo { chain, issuer })
             }
         };
@@ -210,7 +211,7 @@ impl crate::KeyMintTa {
                 op.update(tbs_data)?;
                 op.finish()
             }
-            _ => Err(km_err!(UnknownError, "unexpected cert signing key type")),
+            _ => Err(km_err!(IncompatibleAlgorithm, "unexpected cert signing key type")),
         }
     }
 
@@ -673,11 +674,10 @@ impl crate::KeyMintTa {
                     // Because `keyblob_parse_decrypt_backlevel` explicitly allows back-level
                     // versioned keys, a `KeyRequiresUpgrade` error indicates that the keyblob looks
                     // to be in legacy format.  Try to convert it.
-                    let legacy_handler = self
-                        .dev
-                        .legacy_key
-                        .as_mut()
-                        .ok_or_else(|| km_err!(UnknownError, "no legacy key handler"))?;
+                    let legacy_handler =
+                        self.dev.legacy_key.as_mut().ok_or_else(|| {
+                            km_err!(KeymintNotConfigured, "no legacy key handler")
+                        })?;
                     (
                         legacy_handler.convert_legacy_key(
                             keyblob_to_upgrade,
