@@ -52,17 +52,17 @@ impl KeyMintTa {
 
     fn rpc_device_info_cbor(&self) -> Result<Value, Error> {
         // First make sure all the relevant info is available.
-        let ids = self
-            .get_attestation_ids()
-            .ok_or_else(|| km_err!(UnknownError, "attestation ID info not available"))?;
+        let ids = self.get_attestation_ids().ok_or_else(|| {
+            km_err!(AttestationIdsNotProvisioned, "attestation ID info not available")
+        })?;
         let boot_info = self
             .boot_info
             .as_ref()
-            .ok_or_else(|| km_err!(UnknownError, "boot info not available"))?;
+            .ok_or_else(|| km_err!(HardwareNotYetAvailable, "boot info not available"))?;
         let hal_info = self
             .hal_info
             .as_ref()
-            .ok_or_else(|| km_err!(UnknownError, "HAL info not available"))?;
+            .ok_or_else(|| km_err!(HardwareNotYetAvailable, "HAL info not available"))?;
 
         let brand = String::from_utf8_lossy(&ids.brand);
         let manufacturer = String::from_utf8_lossy(&ids.manufacturer);
@@ -81,7 +81,13 @@ impl KeyMintTa {
         let security_level = match self.hw_info.security_level {
             SecurityLevel::TrustedEnvironment => "tee",
             SecurityLevel::Strongbox => "strongbox",
-            l => return Err(km_err!(UnknownError, "security level {:?} not supported", l)),
+            l => {
+                return Err(km_err!(
+                    HardwareTypeUnavailable,
+                    "security level {:?} not supported",
+                    l
+                ))
+            }
         };
 
         let fused = match &self.rpc_info {

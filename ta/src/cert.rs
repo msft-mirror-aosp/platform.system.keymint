@@ -78,7 +78,7 @@ pub(crate) fn tbs_certificate<'a>(
             KeyMaterial::Rsa(_) => crypto::rsa::SHA256_PKCS1_SIGNATURE_OID,
             KeyMaterial::Ec(curve, _, _) => crypto::ec::curve_to_signing_oid(curve),
             _ => {
-                return Err(km_err!(UnknownError, "unexpected cert signing key type"));
+                return Err(km_err!(UnsupportedAlgorithm, "unexpected cert signing key type"));
             }
         },
         None => {
@@ -90,7 +90,7 @@ pub(crate) fn tbs_certificate<'a>(
                 }
                 alg => {
                     return Err(km_err!(
-                        UnknownError,
+                        UnsupportedAlgorithm,
                         "unexpected algorithm for public key {:?}",
                         alg
                     ))
@@ -151,12 +151,12 @@ pub(crate) fn tbs_certificate<'a>(
 /// Extract the Subject field from a `keymint::Certificate` as DER-encoded data.
 pub(crate) fn extract_subject(cert: &keymint::Certificate) -> Result<Vec<u8>, Error> {
     let cert = x509_cert::Certificate::from_der(&cert.encoded_certificate)
-        .map_err(|e| km_err!(UnknownError, "failed to parse certificate: {:?}", e))?;
+        .map_err(|e| km_err!(EncodingError, "failed to parse certificate: {:?}", e))?;
     let subject_data = cert
         .tbs_certificate
         .subject
         .to_vec()
-        .map_err(|e| km_err!(UnknownError, "failed to DER-encode subject: {:?}", e))?;
+        .map_err(|e| km_err!(EncodingError, "failed to DER-encode subject: {:?}", e))?;
     Ok(subject_data)
 }
 
@@ -301,7 +301,7 @@ pub(crate) fn attestation_extension<'a>(
             l if l == security_level => hw_chars = &characteristic.authorizations,
             l => {
                 return Err(km_err!(
-                    UnknownError,
+                    InvalidTag,
                     "found characteristics for unexpected security level {:?}",
                     l,
                 ))
@@ -322,7 +322,7 @@ pub(crate) fn attestation_extension<'a>(
         None,
     )?;
     let sec_level = SecurityLevel::try_from(security_level as u32)
-        .map_err(|_| km_err!(UnknownError, "invalid security level {:?}", security_level))?;
+        .map_err(|_| km_err!(InvalidArgument, "invalid security level {:?}", security_level))?;
     let ext = AttestationExtension {
         attestation_version: KEYMINT_V3_VERSION,
         attestation_security_level: sec_level,

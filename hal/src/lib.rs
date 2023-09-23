@@ -37,7 +37,7 @@ mod tests;
 #[inline]
 pub fn failed_cbor(err: CborError) -> binder::Status {
     binder::Status::new_service_specific_error(
-        ErrorCode::UnknownError as i32,
+        ErrorCode::EncodingError as i32,
         Some(&CString::new(format!("CBOR conversion failed: {:?}", err)).unwrap()),
     )
 }
@@ -154,7 +154,7 @@ where
     let mut req_data = Vec::new();
     cbor::ser::into_writer(&req_arr, &mut req_data).map_err(|e| {
         binder::Status::new_service_specific_error(
-            ErrorCode::UnknownError as i32,
+            ErrorCode::EncodingError as i32,
             Some(
                 &CString::new(format!("failed to write CBOR request to buffer: {:?}", e)).unwrap(),
             ),

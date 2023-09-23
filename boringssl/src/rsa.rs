@@ -140,10 +140,10 @@ impl crypto::AccumulatingOperation for BoringRsaDecryptOperation {
 
         if let DecryptionMode::OaepPadding { msg_digest, mgf_digest } = self.mode {
             let omsg_digest = digest_into_openssl(msg_digest).ok_or_else(|| {
-                km_err!(UnknownError, "Digest::None not allowed for RSA-OAEP msg digest")
+                km_err!(UnsupportedDigest, "Digest::None not allowed for RSA-OAEP msg digest")
             })?;
             let omgf_digest = digest_into_openssl(mgf_digest).ok_or_else(|| {
-                km_err!(UnknownError, "Digest::None not allowed for RSA-OAEP MGF1 digest")
+                km_err!(UnsupportedDigest, "Digest::None not allowed for RSA-OAEP MGF1 digest")
             })?;
             decrypter
                 .set_rsa_oaep_md(omsg_digest)
@@ -221,7 +221,7 @@ impl BoringRsaDigestSignOperation {
                 return Err(openssl_last_err());
             }
             if op.pctx.is_null() {
-                return Err(km_err!(UnknownError, "no PCTX!"));
+                return Err(km_err!(BoringSslError, "no PCTX!"));
             }
 
             // Safety: `op.pctx` is not `nullptr` and is valid.

@@ -94,7 +94,7 @@ impl crypto::AccumulatingOperation for BoringAesCmacOperation {
             return Err(openssl_last_err());
         }
         if output_len != crypto::aes::BLOCK_SIZE {
-            return Err(km_err!(UnknownError, "Unexpected CMAC output size of {}", output_len));
+            return Err(km_err!(BoringSslError, "Unexpected CMAC output size of {}", output_len));
         }
         Ok(output)
     }
