@@ -1,4 +1,5 @@
 //! BoringSSL-based implementation of HMAC.
+use crate::types::HmacCtx;
 use crate::{malloc_err, openssl_last_err};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -21,9 +22,9 @@ impl crypto::Hmac for BoringHmac {
         let op = BoringHmacOperation {
             // Safety: BoringSSL emits either null or a valid raw pointer, and the value is
             // immediately checked for null below.
-            ctx: unsafe { ffi::HMAC_CTX_new() },
+            ctx: unsafe { HmacCtx(ffi::HMAC_CTX_new()) },
         };
-        if op.ctx.is_null() {
+        if op.ctx.0.is_null() {
             return Err(malloc_err!());
         }
 
@@ -37,7 +38,7 @@ impl crypto::Hmac for BoringHmac {
         // `digest_into_openssl_ffi()`.  `key_len` is length of `key.0`, which is a valid `Vec<u8>`.
         let result = unsafe {
             ffi::HMAC_Init_ex(
-                op.ctx,
+                op.ctx.0,
                 key.0.as_ptr() as *const libc::c_void,
                 key_len,
                 digest,
@@ -59,7 +60,7 @@ impl crypto::Hmac for BoringHmac {
 /// crate.
 pub struct BoringHmacOperation {
     // Safety: `ctx` is always non-null and valid except for initial error path in `begin()`
-    ctx: *mut ffi::HMAC_CTX,
+    ctx: HmacCtx,
 }
 
 impl core::ops::Drop for BoringHmacOperation {
@@ -67,7 +68,7 @@ impl core::ops::Drop for BoringHmacOperation {
         // Safety: `self.ctx` might be null (in the error path when `ffi::HMAC_CTX_new` fails)
         // but `ffi::HMAC_CTX_free` copes with null.
         unsafe {
-            ffi::HMAC_CTX_free(self.ctx);
+            ffi::HMAC_CTX_free(self.ctx.0);
         }
     }
 }
@@ -75,7 +76,7 @@ impl core::ops::Drop for BoringHmacOperation {
 impl crypto::AccumulatingOperation for BoringHmacOperation {
     fn update(&mut self, data: &[u8]) -> Result<(), Error> {
         // Safety: `self.ctx` is non-null and valid, and `data` is a valid slice.
-        let result = unsafe { ffi::HMAC_Update(self.ctx, data.as_ptr(), data.len()) };
+        let result = unsafe { ffi::HMAC_Update(self.ctx.0, data.as_ptr(), data.len()) };
         if result != 1 {
             return Err(openssl_last_err());
         }
@@ -90,7 +91,7 @@ impl crypto::AccumulatingOperation for BoringHmacOperation {
         // buffer.
         let result = unsafe {
             // (force line break for safety lint limitation)
-            ffi::HMAC_Final(self.ctx, output.as_mut_ptr(), &mut output_len as *mut u32)
+            ffi::HMAC_Final(self.ctx.0, output.as_mut_ptr(), &mut output_len as *mut u32)
         };
         if result != 1 {
             return Err(openssl_last_err());
