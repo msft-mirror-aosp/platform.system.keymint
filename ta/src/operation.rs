@@ -749,7 +749,7 @@ impl crate::KeyMintTa {
                 ));
             }
             if self.verify_device_hmac(data, token).map_err(|e| {
-                km_err!(UnknownError, "failed to perform HMAC on confirmation token: {:?}", e)
+                km_err!(VerificationFailed, "failed to perform HMAC on confirmation token: {:?}", e)
             })? {
                 Ok(())
             } else {
@@ -851,7 +851,7 @@ impl crate::KeyMintTa {
             if let Some(timeout_secs) = auth_info.timeout_secs {
                 if self.imp.clock.is_some() {
                     return Err(km_err!(
-                        UnknownError,
+                        InvalidAuthorizationTimeout,
                         "attempt to check auth timeout after begin() on device with clock!"
                     ));
                 }

@@ -1,4 +1,5 @@
 //! BoringSSL-based implementation of elliptic curve functionality.
+use crate::types::{EvpMdCtx, EvpPkeyCtx};
 use crate::{cvt, cvt_p, digest_into_openssl, openssl_err, openssl_last_err, ossl};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -77,7 +78,7 @@ impl crypto::Ec for BoringEc {
         let pkey = ossl!(openssl::pkey::PKey::generate_ed25519())?;
         let key = ossl!(pkey.raw_private_key())?;
         let key: [u8; ec::CURVE25519_PRIV_KEY_LEN] = key.try_into().map_err(|e| {
-            km_err!(UnknownError, "generated Ed25519 key of unexpected size: {:?}", e)
+            km_err!(UnsupportedKeySize, "generated Ed25519 key of unexpected size: {:?}", e)
         })?;
         let key = Key::Ed25519(ec::Ed25519Key(key));
         Ok(crypto::KeyMaterial::Ec(EcCurve::Curve25519, CurveType::EdDsa, key.into()))
@@ -91,7 +92,7 @@ impl crypto::Ec for BoringEc {
         let pkey = ossl!(openssl::pkey::PKey::generate_x25519())?;
         let key = ossl!(pkey.raw_private_key())?;
         let key: [u8; ec::CURVE25519_PRIV_KEY_LEN] = key.try_into().map_err(|e| {
-            km_err!(UnknownError, "generated X25519 key of unexpected size: {:?}", e)
+            km_err!(UnsupportedKeySize, "generated X25519 key of unexpected size: {:?}", e)
         })?;
         let key = Key::X25519(ec::X25519Key(key));
         Ok(crypto::KeyMaterial::Ec(EcCurve::Curve25519, CurveType::Xdh, key.into()))
@@ -163,7 +164,9 @@ impl crypto::Ec for BoringEc {
                 }
             }
             Key::Ed25519(key) => Ok(Box::new(BoringEd25519SignOperation::new(key)?)),
-            Key::X25519(_) => Err(km_err!(UnknownError, "X25519 key not valid for signing")),
+            Key::X25519(_) => {
+                Err(km_err!(IncompatibleAlgorithm, "X25519 key not valid for signing"))
+            }
         }
     }
 }
@@ -217,16 +220,16 @@ impl crypto::AccumulatingOperation for BoringEcAgreeOperation {
                 let peer_key_data = ossl!(peer_key.raw_public_key())?;
                 if peer_key_data.len() != ffi::X25519_PUBLIC_VALUE_LEN as usize {
                     return Err(km_err!(
-                        UnknownError,
+                        UnsupportedKeySize,
                         "peer raw key invalid length {}",
                         peer_key_data.len()
                     ));
                 }
 
                 let mut sig = vec_try![0; ffi::X25519_SHARED_KEY_LEN as usize]?;
+                // Safety: all pointer arguments need to point to 32-byte memory areas, enforced
+                // above and in the definition of [`ec::X25519Key`].
                 let result = unsafe {
-                    // Safety: all pointer arguments need to point to 32-byte memory areas, enforced
-                    // above and in the definition of [`ec::X25519Key`].
                     ffi::X25519(sig.as_mut_ptr(), &key.0 as *const u8, peer_key_data.as_ptr())
                 };
                 if result == 1 {
@@ -236,8 +239,10 @@ impl crypto::AccumulatingOperation for BoringEcAgreeOperation {
                 }
             }
             #[cfg(not(soong))]
-            Key::X25519(_) => Err(km_err!(UnknownError, "X25519 not supported in cargo")),
-            Key::Ed25519(_) => Err(km_err!(UnknownError, "Ed25519 key not valid for agreement")),
+            Key::X25519(_) => Err(km_err!(UnsupportedEcCurve, "X25519 not supported in cargo")),
+            Key::Ed25519(_) => {
+                Err(km_err!(IncompatibleAlgorithm, "Ed25519 key not valid for agreement"))
+            }
         }
     }
 }
@@ -249,18 +254,18 @@ pub struct BoringEcDigestSignOperation {
     // because the FFI-allocated data doesn't move.
     pkey: openssl::pkey::PKey<openssl::pkey::Private>,
 
-    // Safety invariant: both `pctx` and `md_ctx` are non-`nullptr` once item is constructed.
-    md_ctx: *mut ffi::EVP_MD_CTX,
-    pctx: *mut ffi::EVP_PKEY_CTX,
+    // Safety invariant: both `pctx` and `md_ctx` are non-`nullptr` and valid once item is
+    // constructed.
+    md_ctx: EvpMdCtx,
+    pctx: EvpPkeyCtx,
 }
 
 impl Drop for BoringEcDigestSignOperation {
     fn drop(&mut self) {
+        // Safety: `EVP_MD_CTX_free()` handles `nullptr`, so it's fine to drop a partly-constructed
+        // item.  `pctx` is owned by the `md_ctx`, so no need to explicitly free it.
         unsafe {
-            // Safety: `EVP_MD_CTX_free()` handles `nullptr`, so it's fine to drop a
-            // partly-constructed item.  `pctx` is owned by the `md_ctx`, so no need to explicitly
-            // free it.
-            ffi::EVP_MD_CTX_free(self.md_ctx);
+            ffi::EVP_MD_CTX_free(self.md_ctx.0);
         }
     }
 }
@@ -271,17 +276,18 @@ impl BoringEcDigestSignOperation {
         let ec_key = ossl!(private_key_from_der_for_group(&key.0, group.as_ref()))?;
         let pkey = ossl!(openssl::pkey::PKey::from_ec_key(ec_key))?;
 
+        // Safety: each of the raw pointers have to be non-nullptr (and thus valid, as BoringSSL
+        // emits only valid pointers or nullptr) to get to the point where they're used.
         unsafe {
             let mut op = BoringEcDigestSignOperation {
                 pkey,
-                md_ctx: cvt_p(ffi::EVP_MD_CTX_new())?,
-                pctx: ptr::null_mut(),
+                md_ctx: EvpMdCtx(cvt_p(ffi::EVP_MD_CTX_new())?),
+                pctx: EvpPkeyCtx(ptr::null_mut()),
             };
 
-            // Safety: `op.md_ctx` must be non-`nullptr` to reach here.
             let r = ffi::EVP_DigestSignInit(
-                op.md_ctx,
-                &mut op.pctx,
+                op.md_ctx.0,
+                &mut op.pctx.0,
                 digest.as_ptr(),
                 ptr::null_mut(),
                 op.pkey.as_ptr(),
@@ -289,10 +295,10 @@ impl BoringEcDigestSignOperation {
             if r != 1 {
                 return Err(openssl_last_err());
             }
-            if op.pctx.is_null() {
-                return Err(km_err!(UnknownError, "no PCTX!"));
+            if op.pctx.0.is_null() {
+                return Err(km_err!(BoringSslError, "no PCTX!"));
             }
-            // Safety invariant: both `pctx` and `md_ctx` are non-`nullptr` on success.
+            // Safety invariant: both `pctx` and `md_ctx` are non-`nullptr` and valid on success.
             Ok(op)
         }
     }
@@ -300,25 +306,26 @@ impl BoringEcDigestSignOperation {
 
 impl crypto::AccumulatingOperation for BoringEcDigestSignOperation {
     fn update(&mut self, data: &[u8]) -> Result<(), Error> {
+        // Safety: `data` is a valid slice, and `self.md_ctx` is non-`nullptr` and valid.
         unsafe {
-            // Safety: `data` is a valid slice, and `self.md_ctx` is non-`nullptr`.
-            cvt(ffi::EVP_DigestUpdate(self.md_ctx, data.as_ptr() as *const _, data.len()))?;
+            cvt(ffi::EVP_DigestUpdate(self.md_ctx.0, data.as_ptr() as *const _, data.len()))?;
         }
         Ok(())
     }
 
     fn finish(self: Box<Self>) -> Result<Vec<u8>, Error> {
         let mut max_siglen = 0;
+        // Safety: `self.md_ctx` is non-`nullptr` and valid.
         unsafe {
-            // Safety: `self.md_ctx` is non-`nullptr`.
-            cvt(ffi::EVP_DigestSignFinal(self.md_ctx, ptr::null_mut(), &mut max_siglen))?;
+            cvt(ffi::EVP_DigestSignFinal(self.md_ctx.0, ptr::null_mut(), &mut max_siglen))?;
         }
         let mut buf = vec_try![0; max_siglen]?;
         let mut actual_siglen = max_siglen;
+        // Safety: `self.md_ctx` is non-`nullptr` and valid, and `buf` does have `actual_siglen`
+        // bytes.
         unsafe {
-            // Safety: `self.md_ctx` is non-`nullptr`, and `buf` does have `actual_siglen` bytes.
             cvt(ffi::EVP_DigestSignFinal(
-                self.md_ctx,
+                self.md_ctx.0,
                 buf.as_mut_ptr() as *mut _,
                 &mut actual_siglen,
             ))?;
@@ -421,7 +428,7 @@ fn nist_key_to_group(key: &ec::Key) -> Result<openssl::ec::EcGroup, Error> {
         ec::Key::P384(_) => Nid::SECP384R1,
         ec::Key::P521(_) => Nid::SECP521R1,
         ec::Key::Ed25519(_) | ec::Key::X25519(_) => {
-            return Err(km_err!(UnknownError, "no NIST group for curve25519 key"))
+            return Err(km_err!(UnsupportedEcCurve, "no NIST group for curve25519 key"))
         }
     })
     .map_err(openssl_err!("failed to determine EcGroup"))

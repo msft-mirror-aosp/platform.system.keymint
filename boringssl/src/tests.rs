@@ -5,7 +5,7 @@ use super::*;
 
 #[test]
 fn test_rng() {
-    let mut rng = rng::BoringRng::default();
+    let mut rng = rng::BoringRng;
     kmr_tests::test_rng(&mut rng);
 }
 

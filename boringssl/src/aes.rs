@@ -262,7 +262,7 @@ impl crypto::EmittingOperation for BoringAesGcmDecryptOperation {
             .map_err(openssl_err_or!(VerificationFailed, "failed to finalize"))?;
         if out_len != 0 {
             return Err(km_err!(
-                UnknownError,
+                BoringSslError,
                 "finalizing AES-GCM tag produced {} bytes of data!",
                 out_len
             ));

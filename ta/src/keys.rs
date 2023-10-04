@@ -14,6 +14,7 @@ use kmr_wire::{
     keymint::{
         AttestationKey, Digest, EcCurve, ErrorCode, HardwareAuthenticatorType, KeyCharacteristics,
         KeyCreationResult, KeyFormat, KeyOrigin, KeyParam, KeyPurpose, SecurityLevel,
+        UNDEFINED_NOT_AFTER, UNDEFINED_NOT_BEFORE,
     },
     *,
 };
@@ -97,9 +98,10 @@ impl crate::KeyMintTa {
             Entry::Vacant(e) => {
                 // Retrieve and store the cert chain information (as this is public).
                 let chain = self.dev.sign_info.cert_chain(key_type)?;
-                let issuer = cert::extract_subject(
-                    chain.get(0).ok_or_else(|| km_err!(UnknownError, "empty attestation chain"))?,
-                )?;
+                let issuer =
+                    cert::extract_subject(chain.get(0).ok_or_else(|| {
+                        km_err!(KeymintNotConfigured, "empty attestation chain")
+                    })?)?;
                 e.insert(AttestationChainInfo { chain, issuer })
             }
         };
@@ -209,7 +211,7 @@ impl crate::KeyMintTa {
                 op.update(tbs_data)?;
                 op.finish()
             }
-            _ => Err(km_err!(UnknownError, "unexpected cert signing key type")),
+            _ => Err(km_err!(IncompatibleAlgorithm, "unexpected cert signing key type")),
         }
     }
 
@@ -639,6 +641,12 @@ impl crate::KeyMintTa {
                 imported_key_params.try_push(KeyParam::UserSecureId(biometric_sid as u64))?;
             }
         };
+
+        // There is no way for clients to pass CERTIFICATE_NOT_BEFORE and CERTIFICATE_NOT_AFTER.
+        // importWrappedKey must use validity with no well-defined expiration date.
+        imported_key_params.try_push(KeyParam::CertificateNotBefore(UNDEFINED_NOT_BEFORE))?;
+        imported_key_params.try_push(KeyParam::CertificateNotAfter(UNDEFINED_NOT_AFTER))?;
+
         self.import_key(
             imported_key_params,
             KeyFormat::try_from(secure_key_wrapper.key_description.key_format).map_err(|_e| {
@@ -666,11 +674,10 @@ impl crate::KeyMintTa {
                     // Because `keyblob_parse_decrypt_backlevel` explicitly allows back-level
                     // versioned keys, a `KeyRequiresUpgrade` error indicates that the keyblob looks
                     // to be in legacy format.  Try to convert it.
-                    let legacy_handler = self
-                        .dev
-                        .legacy_key
-                        .as_mut()
-                        .ok_or_else(|| km_err!(UnknownError, "no legacy key handler"))?;
+                    let legacy_handler =
+                        self.dev.legacy_key.as_mut().ok_or_else(|| {
+                            km_err!(KeymintNotConfigured, "no legacy key handler")
+                        })?;
                     (
                         legacy_handler.convert_legacy_key(
                             keyblob_to_upgrade,

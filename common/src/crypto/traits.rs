@@ -42,7 +42,7 @@ pub struct Implementation {
 
 /// Abstraction of a random number generator that is cryptographically secure
 /// and which accepts additional entropy to be mixed in.
-pub trait Rng {
+pub trait Rng: Send {
     /// Add entropy to the generator's pool.
     fn add_entropy(&mut self, data: &[u8]);
     /// Generate random data.
@@ -57,7 +57,7 @@ pub trait Rng {
 
 /// Abstraction of constant-time comparisons, for use in cryptographic contexts where timing attacks
 /// need to be avoided.
-pub trait ConstTimeEq {
+pub trait ConstTimeEq: Send {
     /// Indicate whether arguments are the same.
     fn eq(&self, left: &[u8], right: &[u8]) -> bool;
     /// Indicate whether arguments are the different.
@@ -67,7 +67,7 @@ pub trait ConstTimeEq {
 }
 
 /// Abstraction of a monotonic clock.
-pub trait MonotonicClock {
+pub trait MonotonicClock: Send {
     /// Return the current time in milliseconds since some arbitrary point in time.  Time must be
     /// monotonically increasing, and "current time" must not repeat until the Android device
     /// reboots, or until at least 50 million years have elapsed.  Time must also continue to
@@ -77,7 +77,7 @@ pub trait MonotonicClock {
 }
 
 /// Abstraction of AES functionality.
-pub trait Aes {
+pub trait Aes: Send {
     /// Generate an AES key.  The default implementation fills with random data.  Key generation
     /// parameters are passed in for reference, to allow for implementations that might have
     /// parameter-specific behaviour.
@@ -139,7 +139,7 @@ pub trait Aes {
 }
 
 /// Abstraction of 3-DES functionality.
-pub trait Des {
+pub trait Des: Send {
     /// Generate a triple DES key. Key generation parameters are passed in for reference, to allow
     /// for implementations that might have parameter-specific behaviour.
     fn generate_key(
@@ -173,7 +173,7 @@ pub trait Des {
 }
 
 /// Abstraction of HMAC functionality.
-pub trait Hmac {
+pub trait Hmac: Send {
     /// Generate an HMAC key. Key generation parameters are passed in for reference, to allow for
     /// implementations that might have parameter-specific behaviour.
     fn generate_key(
@@ -215,14 +215,14 @@ pub trait Hmac {
 
 /// Abstraction of AES-CMAC functionality. (Note that this is not exposed in the KeyMint HAL API
 /// directly, but is required for the CKDF operations involved in `ISharedSecret` negotiation.)
-pub trait AesCmac {
+pub trait AesCmac: Send {
     /// Create an AES-CMAC operation. Implementations can assume that `key` will have length
     /// of either 16 (AES-128) or 32 (AES-256).
     fn begin(&self, key: OpaqueOr<aes::Key>) -> Result<Box<dyn AccumulatingOperation>, Error>;
 }
 
 /// Abstraction of RSA functionality.
-pub trait Rsa {
+pub trait Rsa: Send {
     /// Generate an RSA key. Key generation parameters are passed in for reference, to allow for
     /// implementations that might have parameter-specific behaviour.
     fn generate_key(
@@ -277,7 +277,7 @@ pub trait Rsa {
 }
 
 /// Abstraction of EC functionality.
-pub trait Ec {
+pub trait Ec: Send {
     /// Generate an EC key for a NIST curve.  Key generation parameters are passed in for reference,
     /// to allow for implementations that might have parameter-specific behaviour.
     fn generate_nist_key(
@@ -389,7 +389,7 @@ pub trait Ec {
 }
 
 /// Abstraction of an in-progress operation that emits data as it progresses.
-pub trait EmittingOperation {
+pub trait EmittingOperation: Send {
     /// Update operation with data.
     fn update(&mut self, data: &[u8]) -> Result<Vec<u8>, Error>;
 
@@ -405,7 +405,7 @@ pub trait AadOperation: EmittingOperation {
 }
 
 /// Abstraction of an in-progress operation that only emits data when it completes.
-pub trait AccumulatingOperation {
+pub trait AccumulatingOperation: Send {
     /// Maximum size of accumulated input.
     fn max_input_size(&self) -> Option<usize> {
         None
@@ -422,7 +422,7 @@ pub trait AccumulatingOperation {
 ///
 /// A default implementation of this trait is available (in `crypto.rs`) for any type that
 /// implements [`Hmac`].
-pub trait Hkdf {
+pub trait Hkdf: Send {
     /// Perform combined HKDF using the input key material in `ikm`.
     fn hkdf(&self, salt: &[u8], ikm: &[u8], info: &[u8], out_len: usize) -> Result<Vec<u8>, Error> {
         let prk = self.extract(salt, ikm)?;
@@ -446,7 +446,7 @@ pub trait Hkdf {
 ///
 /// Aa default implementation of this trait is available (in `crypto.rs`) for any type that
 /// implements [`AesCmac`].
-pub trait Ckdf {
+pub trait Ckdf: Send {
     /// Perform CKDF using the key material in `key`.
     fn ckdf(
         &self,

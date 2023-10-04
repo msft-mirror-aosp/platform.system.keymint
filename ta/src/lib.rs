@@ -470,10 +470,9 @@ impl KeyMintTa {
         hmac_op.update(keyblob)?;
         let tag = hmac_op.finish()?;
 
-        Ok(KeyId(
-            tag.try_into()
-                .map_err(|_e| km_err!(UnknownError, "wrong size output from HMAC-SHA256"))?,
-        ))
+        Ok(KeyId(tag.try_into().map_err(|_e| {
+            km_err!(SecureHwCommunicationFailed, "wrong size output from HMAC-SHA256")
+        })?))
     }
 
     /// Increment the use count for the given key ID, failing if `max_uses` is reached.
@@ -543,7 +542,7 @@ impl KeyMintTa {
             self.boot_info = Some(boot_info);
             self.rot_data =
                 Some(rot_info.into_vec().map_err(|e| {
-                    km_err!(UnknownError, "failed to encode root-of-trust: {:?}", e)
+                    km_err!(EncodingError, "failed to encode root-of-trust: {:?}", e)
                 })?);
         }
         Ok(())
@@ -622,7 +621,7 @@ impl KeyMintTa {
                 // for the `IRemotelyProvisionedComponent` or for one of the other HALs, so we don't
                 // know what numbering space the error codes are expected to be in.  Assume the
                 // shared KeyMint `ErrorCode` space.
-                (None, error_rsp(ErrorCode::UnknownError as i32))
+                (None, error_rsp(ErrorCode::EncodingError as i32))
             }
         };
         trace!("<- TA: send response {:?} rc {}", req_code, rsp.error_code);
@@ -997,7 +996,7 @@ impl KeyMintTa {
 
     fn delete_all_keys(&mut self) -> Result<(), Error> {
         if let Some(sdd_mgr) = &mut self.dev.sdd_mgr {
-            error!("secure deleting all keys! device unlikely to survive reboot!");
+            error!("secure deleting all keys -- device likely to need factory reset!");
             sdd_mgr.delete_all();
         }
         Ok(())
@@ -1006,6 +1005,8 @@ impl KeyMintTa {
     fn destroy_attestation_ids(&mut self) -> Result<(), Error> {
         match self.dev.attest_ids.as_mut() {
             Some(attest_ids) => {
+                // Drop any cached copies too.
+                *self.attestation_id_info.borrow_mut() = None;
                 error!("destroying all device attestation IDs!");
                 attest_ids.destroy_all()
             }
@@ -1032,7 +1033,7 @@ impl KeyMintTa {
             .boot_info()?
             .clone()
             .to_tagged_vec()
-            .map_err(|_e| km_err!(UnknownError, "Failed to CBOR-encode RootOfTrust"))?;
+            .map_err(|_e| km_err!(EncodingError, "Failed to CBOR-encode RootOfTrust"))?;
 
         let mac0 = coset::CoseMac0Builder::new()
             .protected(
@@ -1042,7 +1043,7 @@ impl KeyMintTa {
             .try_create_tag(challenge, |data| self.device_hmac(data))?
             .build();
         mac0.to_tagged_vec()
-            .map_err(|_e| km_err!(UnknownError, "Failed to CBOR-encode RootOfTrust"))
+            .map_err(|_e| km_err!(EncodingError, "Failed to CBOR-encode RootOfTrust"))
     }
 
     fn send_root_of_trust(&mut self, root_of_trust: &[u8]) -> Result<(), Error> {
@@ -1165,7 +1166,7 @@ impl KeyMintTa {
             }
         }
         Err(km_err!(
-            UnknownError,
+            InvalidArgument,
             "no characteristics at our security level {:?}",
             self.hw_info.security_level
         ))
@@ -1204,7 +1205,7 @@ fn op_error_rsp(op: KeyMintOperation, err: Error) -> PerformOpResponse {
             Error::Hal(e, _) => e,
             Error::Rpc(_, _) => {
                 error!("encountered RKP error on non-RKP method! {:?}", err);
-                ErrorCode::UnknownError
+                ErrorCode::InvalidArgument
             }
             Error::Alloc(_) => ErrorCode::MemoryAllocationFailed,
         };

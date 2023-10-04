@@ -72,14 +72,17 @@ rust_binary_host {
     ],
 }
 
-// Fuzz target is commented out because it must be built for the device,
-// but some of the dependencies of libkmr_common have only been allowed as
-// non-platform dependencies.
-// TODO: reinstate if host-only fuzzing becomes available, or if the various
-// dependencies become available on the platform
-
-//rust_fuzz {
-//    name: "libkmr_common_fuzz_keyblob",
-//    srcs: ["fuzz/fuzz_targets/keyblob.rs"],
-//    rustlibs: ["libkmr_common"],
-//}
+// The fuzzer target cannot be built for the device because some
+// of the dependencies have restricted visibility.
+rust_fuzz_host {
+    name: "libkmr_common_fuzz_keyblob",
+    srcs: ["fuzz/fuzz_targets/keyblob.rs"],
+    rustlibs: ["libkmr_common"],
+    fuzz_config: {
+        cc: ["drysdale@google.com", "hasinitg@google.com"],
+        componentid: 1084733,
+        hotlists: ["4271696"],
+        fuzz_on_haiku_device: false,
+        fuzz_on_haiku_host: true,
+    },
+}
