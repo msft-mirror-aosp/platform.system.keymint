@@ -49,6 +49,40 @@ rust_library_host {
     ],
 }
 
+
+rust_library_rlib {
+    name: "libkmr_common_nostd",
+    crate_name: "kmr_common",
+    srcs: ["src/lib.rs"],
+    edition: "2021",
+    lints: "android",
+    vendor_available: true,
+    prefer_rlib: true,
+    no_stdlibs: true,
+    rustlibs: [
+        "libciborium_nostd",
+        "libciborium_io_nostd",
+        "libcoset_nostd",
+        "libder_nostd",
+        "libkmr_wire_nostd",
+        "liblog_rust_nostd",
+        "libpkcs1_nostd",
+        "libpkcs8_nostd",
+        "libsec1_nostd",
+        "libspki_nostd",
+        "libzeroize_nostd",
+    ],
+    proc_macros: [
+        "libenumn",
+        "libkmr_derive",
+    ],
+    stdlibs: [
+        "liballoc.rust_sysroot",
+        "libcompiler_builtins.rust_sysroot",
+        "libcore.rust_sysroot",
+    ],
+}
+
 rust_test_host {
     name: "libkmr_common_test",
     crate_name: "kmr_common_test",
