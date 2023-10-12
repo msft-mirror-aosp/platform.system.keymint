@@ -184,3 +184,9 @@ in [`kmr_hal::device`](hal/src/device.rs).
 - [ ] Storage key wrapping integration (optional).
 - [ ] Trusted user presence indication (optional).
 - [ ] Legacy keyblob format converter (optional).
+
+## Supporting Older Versions of the KeyMint HAL
+
+The reference implementation has the ability to behave like an earlier version of the KeyMint
+HAL. To enable emulation of (say) KeyMint v1, link the HAL service against the `libkmr_hal_v1` and
+`libkmr_wire_hal_v1` targets rather than `libkmr_hal` / `libkmr_wire`.
