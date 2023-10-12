@@ -43,6 +43,21 @@ use operation::{OpHandle, Operation};
 #[cfg(test)]
 mod tests;
 
+/// Possible KeyMint HAL versions
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyMintHalVersion {
+    /// V3 adds support for attestation of second IMEI value.
+    V3 = 300,
+    /// V2 adds support for curve 25519 and root-of-trust transfer.
+    V2 = 200,
+    /// V1 is the initial version of the KeyMint HAL.
+    V1 = 100,
+}
+
+/// Version code for current KeyMint.
+pub const KEYMINT_CURRENT_VERSION: KeyMintHalVersion = KeyMintHalVersion::V3;
+
 /// Maximum number of parallel operations supported when running as TEE.
 const MAX_TEE_OPERATIONS: usize = 16;
 
@@ -85,6 +100,9 @@ pub struct KeyMintTa {
 
     /// Information about the implementation of the IRemotelyProvisionedComponent (IRPC) HAL.
     rpc_info: RpcInfo,
+
+    /// The version of the HAL AIDL interface specification that this TA acts as.
+    aidl_version: KeyMintHalVersion,
 
     /**
      * State that is set after the TA starts, but latched thereafter.
@@ -304,6 +322,7 @@ impl KeyMintTa {
             shared_secret_params: None,
             hw_info,
             rpc_info,
+            aidl_version: KEYMINT_CURRENT_VERSION,
             boot_info: None,
             rot_data: None,
             hal_info: None,
@@ -568,6 +587,18 @@ impl KeyMintTa {
         }
     }
 
+    /// Configure the version of the HAL that this TA should act as.
+    pub fn set_hal_version(&mut self, aidl_version: u32) -> Result<(), Error> {
+        self.aidl_version = match aidl_version {
+            100 => KeyMintHalVersion::V1,
+            200 => KeyMintHalVersion::V2,
+            300 => KeyMintHalVersion::V3,
+            _ => return Err(km_err!(InvalidArgument, "unsupported HAL version {}", aidl_version)),
+        };
+        info!("Set aidl_version to {:?}", self.aidl_version);
+        Ok(())
+    }
+
     /// Configure attestation IDs externally.
     pub fn set_attestation_ids(&self, ids: AttestationIdInfo) {
         if self.dev.attest_ids.is_some() {
@@ -671,6 +702,10 @@ impl KeyMintTa {
                 self.set_attestation_ids(req.ids);
                 op_ok_rsp(PerformOpRsp::SetAttestationIds(SetAttestationIdsResponse {}))
             }
+            PerformOpReq::SetHalVersion(req) => match self.set_hal_version(req.aidl_version) {
+                Ok(_) => op_ok_rsp(PerformOpRsp::SetHalVersion(SetHalVersionResponse {})),
+                Err(e) => op_error_rsp(SetHalVersionRequest::CODE, e),
+            },
 
             // ISharedSecret messages.
             PerformOpReq::SharedSecretGetSharedSecretParameters(_req) => {

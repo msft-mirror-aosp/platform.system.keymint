@@ -247,16 +247,19 @@ impl<T: SerializedChannel> keymint::IKeyMintDevice::IKeyMintDevice for Device<T>
         })?;
         Ok(rsp.ret.innto())
     }
+    #[cfg(feature = "hal_v2")]
     fn getRootOfTrustChallenge(&self) -> binder::Result<[u8; 16]> {
         let rsp: GetRootOfTrustChallengeResponse =
             self.execute(GetRootOfTrustChallengeRequest {})?;
         Ok(rsp.ret)
     }
+    #[cfg(feature = "hal_v2")]
     fn getRootOfTrust(&self, challenge: &[u8; 16]) -> binder::Result<Vec<u8>> {
         let rsp: GetRootOfTrustResponse =
             self.execute(GetRootOfTrustRequest { challenge: *challenge })?;
         Ok(rsp.ret)
     }
+    #[cfg(feature = "hal_v2")]
     fn sendRootOfTrust(&self, root_of_trust: &[u8]) -> binder::Result<()> {
         let _rsp: SendRootOfTrustResponse =
             self.execute(SendRootOfTrustRequest { root_of_trust: root_of_trust.to_vec() })?;
