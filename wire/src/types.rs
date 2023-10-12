@@ -27,9 +27,34 @@ pub struct RsaExponent(pub u64);
 /// Default maximum supported size for CBOR-serialized messages.
 pub const DEFAULT_MAX_SIZE: usize = 4096;
 
-/// Marker type indicating failure to convert into an `enum` variant.
+/// Marker type indicating failure to convert into a wire type.  For `enum` wire types, the variant
+/// names match the `enum` whose value failed to convert.
 #[derive(Debug)]
-pub struct ValueNotRecognized;
+pub enum ValueNotRecognized {
+    // Enum type names.
+    KeyPurpose,
+    Algorithm,
+    BlockMode,
+    Digest,
+    PaddingMode,
+    EcCurve,
+    ErrorCode,
+    HardwareAuthenticatorType,
+    KeyFormat,
+    KeyOrigin,
+    SecurityLevel,
+    Tag,
+    TagType,
+    KmVersion,
+    EekCurve,
+    Origin,
+    // Non-enum types.
+    Bool,
+    Blob,
+    DateTime,
+    Integer,
+    LongInteger,
+}
 
 /// Trait that associates an enum value of the specified type with a type.
 /// Values of the `enum` type `T` are used to identify particular message types.
@@ -325,6 +350,14 @@ pub struct SetHalInfoRequest {
 #[derive(Debug, AsCborValue)]
 pub struct SetHalInfoResponse {}
 
+// HAL->TA at start of day.
+#[derive(Debug, PartialEq, Eq, AsCborValue)]
+pub struct SetHalVersionRequest {
+    pub aidl_version: u32,
+}
+#[derive(Debug, AsCborValue)]
+pub struct SetHalVersionResponse {}
+
 // Boot loader->TA at start of day.
 #[derive(Debug, AsCborValue)]
 pub struct SetBootInfoRequest {
@@ -610,6 +643,7 @@ declare_req_rsp_enums! { KeyMintOperation  =>    (PerformOpReq, PerformOpRsp) {
     SetHalInfo = 0x81 =>                               (SetHalInfoRequest, SetHalInfoResponse),
     SetBootInfo = 0x82 =>                              (SetBootInfoRequest, SetBootInfoResponse),
     SetAttestationIds = 0x83 =>                        (SetAttestationIdsRequest, SetAttestationIdsResponse),
+    SetHalVersion = 0x84 =>                            (SetHalVersionRequest, SetHalVersionResponse),
 } }
 
 /// Indicate whether an operation is part of the `IRemotelyProvisionedComponent` HAL.

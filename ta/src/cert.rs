@@ -33,9 +33,6 @@ use x509_cert::{
     time::Time,
 };
 
-/// Version code for KeyMint v3.
-pub const KEYMINT_V3_VERSION: i32 = 300;
-
 /// OID value for the Android Attestation extension.
 pub const ATTESTATION_EXTENSION_OID: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.3.6.1.4.1.11129.2.1.17");
@@ -282,6 +279,7 @@ enum SecurityLevel {
 /// Build an ASN.1 DER-encoded attestation extension.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn attestation_extension<'a>(
+    keymint_version: i32,
     challenge: &'a [u8],
     app_id: &'a [u8],
     security_level: keymint::SecurityLevel,
@@ -324,9 +322,9 @@ pub(crate) fn attestation_extension<'a>(
     let sec_level = SecurityLevel::try_from(security_level as u32)
         .map_err(|_| km_err!(InvalidArgument, "invalid security level {:?}", security_level))?;
     let ext = AttestationExtension {
-        attestation_version: KEYMINT_V3_VERSION,
+        attestation_version: keymint_version,
         attestation_security_level: sec_level,
-        keymint_version: KEYMINT_V3_VERSION,
+        keymint_version,
         keymint_security_level: sec_level,
         attestation_challenge: challenge,
         unique_id,
@@ -1229,6 +1227,7 @@ impl From<keymint::VerifiedBootState> for VerifiedBootState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::KeyMintHalVersion;
     use alloc::boxed::Box;
     use alloc::vec;
 
@@ -1236,9 +1235,9 @@ mod tests {
     fn test_attest_ext_encode_decode() {
         let sec_level = SecurityLevel::TrustedEnvironment;
         let ext = AttestationExtension {
-            attestation_version: KEYMINT_V3_VERSION,
+            attestation_version: KeyMintHalVersion::V3 as i32,
             attestation_security_level: sec_level,
-            keymint_version: KEYMINT_V3_VERSION,
+            keymint_version: KeyMintHalVersion::V3 as i32,
             keymint_security_level: sec_level,
             attestation_challenge: b"abc",
             unique_id: b"xxx",

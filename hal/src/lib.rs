@@ -254,6 +254,21 @@ pub fn send_hal_info<T: SerializedChannel>(channel: &mut T) -> binder::Result<()
     })?;
     info!("HAL->TA: environment info is {:?}", req);
     let _rsp: kmr_wire::SetHalInfoResponse = channel_execute(channel, req)?;
+
+    let aidl_version = if cfg!(feature = "hal_v3") {
+        300
+    } else if cfg!(feature = "hal_v2") {
+        200
+    } else {
+        100
+    };
+    let req = kmr_wire::SetHalVersionRequest { aidl_version };
+    info!("HAL->TA: setting KeyMint HAL version to {}", aidl_version);
+    let result: binder::Result<kmr_wire::SetHalVersionResponse> = channel_execute(channel, req);
+    if let Err(e) = result {
+        // The SetHalVersionRequest message was added later; an earlier TA may not recognize it.
+        warn!("Setting KeyMint HAL version failed: {:?}", e);
+    }
     Ok(())
 }
 

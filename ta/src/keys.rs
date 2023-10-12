@@ -147,6 +147,7 @@ impl crate::KeyMintTa {
             if let Some(SigningInfo { attestation_info: Some((challenge, app_id)), .. }) = &info {
                 let unique_id = self.calculate_unique_id(app_id, params)?;
                 let attest_ext = cert::attestation_extension(
+                    self.aidl_version as i32,
                     challenge,
                     app_id,
                     self.hw_info.security_level,
