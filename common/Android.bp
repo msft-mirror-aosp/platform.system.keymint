@@ -108,6 +108,8 @@ rust_binary_host {
 
 // The fuzzer target cannot be built for the device because some
 // of the dependencies have restricted visibility.
+// TODO: (b/304507701) Uncomment when resolved
+/*
 rust_fuzz_host {
     name: "libkmr_common_fuzz_keyblob",
     srcs: ["fuzz/fuzz_targets/keyblob.rs"],
@@ -120,3 +122,4 @@ rust_fuzz_host {
         fuzz_on_haiku_host: true,
     },
 }
+*/
