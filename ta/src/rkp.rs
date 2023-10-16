@@ -17,8 +17,8 @@ use kmr_wire::{
     cbor,
     cbor::cbor,
     keymint::{
-        Algorithm, DateTime, Digest, EcCurve, KeyParam, KeyPurpose, SecurityLevel,
-        VerifiedBootState,
+        Algorithm, Digest, EcCurve, KeyParam, KeyPurpose, SecurityLevel, VerifiedBootState,
+        UNDEFINED_NOT_AFTER, UNDEFINED_NOT_BEFORE,
     },
     read_to_value, rpc,
     rpc::{
@@ -37,8 +37,8 @@ const RPC_P256_KEYGEN_PARAMS: [KeyParam; 8] = [
     KeyParam::EcCurve(EcCurve::P256),
     KeyParam::NoAuthRequired,
     KeyParam::Digest(Digest::Sha256),
-    KeyParam::CertificateNotBefore(DateTime { ms_since_epoch: 0 }),
-    KeyParam::CertificateNotAfter(DateTime { ms_since_epoch: 253402300799000 }),
+    KeyParam::CertificateNotBefore(UNDEFINED_NOT_BEFORE),
+    KeyParam::CertificateNotAfter(UNDEFINED_NOT_AFTER),
 ];
 
 const MAX_CHALLENGE_SIZE_V2: usize = 64;
@@ -52,17 +52,17 @@ impl KeyMintTa {
 
     fn rpc_device_info_cbor(&self) -> Result<Value, Error> {
         // First make sure all the relevant info is available.
-        let ids = self
-            .get_attestation_ids()
-            .ok_or_else(|| km_err!(UnknownError, "attestation ID info not available"))?;
+        let ids = self.get_attestation_ids().ok_or_else(|| {
+            km_err!(AttestationIdsNotProvisioned, "attestation ID info not available")
+        })?;
         let boot_info = self
             .boot_info
             .as_ref()
-            .ok_or_else(|| km_err!(UnknownError, "boot info not available"))?;
+            .ok_or_else(|| km_err!(HardwareNotYetAvailable, "boot info not available"))?;
         let hal_info = self
             .hal_info
             .as_ref()
-            .ok_or_else(|| km_err!(UnknownError, "HAL info not available"))?;
+            .ok_or_else(|| km_err!(HardwareNotYetAvailable, "HAL info not available"))?;
 
         let brand = String::from_utf8_lossy(&ids.brand);
         let manufacturer = String::from_utf8_lossy(&ids.manufacturer);
@@ -81,7 +81,13 @@ impl KeyMintTa {
         let security_level = match self.hw_info.security_level {
             SecurityLevel::TrustedEnvironment => "tee",
             SecurityLevel::Strongbox => "strongbox",
-            l => return Err(km_err!(UnknownError, "security level {:?} not supported", l)),
+            l => {
+                return Err(km_err!(
+                    HardwareTypeUnavailable,
+                    "security level {:?} not supported",
+                    l
+                ))
+            }
         };
 
         let fused = match &self.rpc_info {

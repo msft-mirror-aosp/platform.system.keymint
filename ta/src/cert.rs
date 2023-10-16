@@ -33,9 +33,6 @@ use x509_cert::{
     time::Time,
 };
 
-/// Version code for KeyMint v3.
-pub const KEYMINT_V3_VERSION: i32 = 300;
-
 /// OID value for the Android Attestation extension.
 pub const ATTESTATION_EXTENSION_OID: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.3.6.1.4.1.11129.2.1.17");
@@ -78,7 +75,7 @@ pub(crate) fn tbs_certificate<'a>(
             KeyMaterial::Rsa(_) => crypto::rsa::SHA256_PKCS1_SIGNATURE_OID,
             KeyMaterial::Ec(curve, _, _) => crypto::ec::curve_to_signing_oid(curve),
             _ => {
-                return Err(km_err!(UnknownError, "unexpected cert signing key type"));
+                return Err(km_err!(UnsupportedAlgorithm, "unexpected cert signing key type"));
             }
         },
         None => {
@@ -90,7 +87,7 @@ pub(crate) fn tbs_certificate<'a>(
                 }
                 alg => {
                     return Err(km_err!(
-                        UnknownError,
+                        UnsupportedAlgorithm,
                         "unexpected algorithm for public key {:?}",
                         alg
                     ))
@@ -151,12 +148,12 @@ pub(crate) fn tbs_certificate<'a>(
 /// Extract the Subject field from a `keymint::Certificate` as DER-encoded data.
 pub(crate) fn extract_subject(cert: &keymint::Certificate) -> Result<Vec<u8>, Error> {
     let cert = x509_cert::Certificate::from_der(&cert.encoded_certificate)
-        .map_err(|e| km_err!(UnknownError, "failed to parse certificate: {:?}", e))?;
+        .map_err(|e| km_err!(EncodingError, "failed to parse certificate: {:?}", e))?;
     let subject_data = cert
         .tbs_certificate
         .subject
         .to_vec()
-        .map_err(|e| km_err!(UnknownError, "failed to DER-encode subject: {:?}", e))?;
+        .map_err(|e| km_err!(EncodingError, "failed to DER-encode subject: {:?}", e))?;
     Ok(subject_data)
 }
 
@@ -282,6 +279,7 @@ enum SecurityLevel {
 /// Build an ASN.1 DER-encoded attestation extension.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn attestation_extension<'a>(
+    keymint_version: i32,
     challenge: &'a [u8],
     app_id: &'a [u8],
     security_level: keymint::SecurityLevel,
@@ -301,7 +299,7 @@ pub(crate) fn attestation_extension<'a>(
             l if l == security_level => hw_chars = &characteristic.authorizations,
             l => {
                 return Err(km_err!(
-                    UnknownError,
+                    InvalidTag,
                     "found characteristics for unexpected security level {:?}",
                     l,
                 ))
@@ -322,11 +320,11 @@ pub(crate) fn attestation_extension<'a>(
         None,
     )?;
     let sec_level = SecurityLevel::try_from(security_level as u32)
-        .map_err(|_| km_err!(UnknownError, "invalid security level {:?}", security_level))?;
+        .map_err(|_| km_err!(InvalidArgument, "invalid security level {:?}", security_level))?;
     let ext = AttestationExtension {
-        attestation_version: KEYMINT_V3_VERSION,
+        attestation_version: keymint_version,
         attestation_security_level: sec_level,
-        keymint_version: KEYMINT_V3_VERSION,
+        keymint_version,
         keymint_security_level: sec_level,
         attestation_challenge: challenge,
         unique_id,
@@ -1229,6 +1227,7 @@ impl From<keymint::VerifiedBootState> for VerifiedBootState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::KeyMintHalVersion;
     use alloc::boxed::Box;
     use alloc::vec;
 
@@ -1236,9 +1235,9 @@ mod tests {
     fn test_attest_ext_encode_decode() {
         let sec_level = SecurityLevel::TrustedEnvironment;
         let ext = AttestationExtension {
-            attestation_version: KEYMINT_V3_VERSION,
+            attestation_version: KeyMintHalVersion::V3 as i32,
             attestation_security_level: sec_level,
-            keymint_version: KEYMINT_V3_VERSION,
+            keymint_version: KeyMintHalVersion::V3 as i32,
             keymint_security_level: sec_level,
             attestation_challenge: b"abc",
             unique_id: b"xxx",

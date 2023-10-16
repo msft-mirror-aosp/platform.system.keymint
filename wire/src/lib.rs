@@ -29,15 +29,16 @@ pub use types::*;
 #[cfg(test)]
 mod tests;
 
-/// Macro that emits an implementation of `TryFrom<i32>` for an enum type that has
-/// `[derive(N)]` attached to it.
+/// Macro that emits an implementation of `TryFrom<i32>` for an enum type that has `[derive(N)]`
+/// attached to it.  The implementation assumes that `ValueNotRecognized` has a variant with the
+/// same name as the enum.
 #[macro_export]
 macro_rules! try_from_n {
     { $ename:ident } => {
         impl core::convert::TryFrom<i32> for $ename {
             type Error = $crate::ValueNotRecognized;
             fn try_from(value: i32) -> Result<Self, Self::Error> {
-                Self::n(value).ok_or($crate::ValueNotRecognized)
+                Self::n(value).ok_or($crate::ValueNotRecognized::$ename)
             }
         }
     };

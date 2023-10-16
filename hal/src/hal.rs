@@ -38,9 +38,27 @@ mod tests;
 
 /// Emit a failure for a failed type conversion.
 #[inline]
-pub fn failed_conversion(_err: kmr_wire::ValueNotRecognized) -> binder::Status {
+pub fn failed_conversion(err: wire::ValueNotRecognized) -> binder::Status {
+    // If conversion from a HAL type failed because an enum value was unrecognized, try to use a
+    // more specific error code.
+    let errcode = match err {
+        wire::ValueNotRecognized::KeyPurpose => keymint::ErrorCode::ErrorCode::UNSUPPORTED_PURPOSE,
+        wire::ValueNotRecognized::Algorithm => keymint::ErrorCode::ErrorCode::UNSUPPORTED_ALGORITHM,
+        wire::ValueNotRecognized::BlockMode => {
+            keymint::ErrorCode::ErrorCode::UNSUPPORTED_BLOCK_MODE
+        }
+        wire::ValueNotRecognized::PaddingMode => {
+            keymint::ErrorCode::ErrorCode::UNSUPPORTED_PADDING_MODE
+        }
+        wire::ValueNotRecognized::Digest => keymint::ErrorCode::ErrorCode::UNSUPPORTED_DIGEST,
+        wire::ValueNotRecognized::KeyFormat => {
+            keymint::ErrorCode::ErrorCode::UNSUPPORTED_KEY_FORMAT
+        }
+        wire::ValueNotRecognized::EcCurve => keymint::ErrorCode::ErrorCode::UNSUPPORTED_EC_CURVE,
+        _ => keymint::ErrorCode::ErrorCode::INVALID_ARGUMENT,
+    };
     binder::Status::new_service_specific_error(
-        keymint::ErrorCode::ErrorCode::INVALID_ARGUMENT.0,
+        errcode.0,
         Some(&CString::new("conversion from HAL type to internal type failed").unwrap()),
     )
 }
@@ -349,6 +367,7 @@ impl Fromm<wire::keymint::KeyParam> for keymint::KeyParameter::KeyParameter {
             KeyParam::AttestationIdImei(v) => {
                 (Tag::ATTESTATION_ID_IMEI, KeyParameterValue::Blob(v))
             }
+            #[cfg(feature = "hal_v3")]
             KeyParam::AttestationIdSecondImei(v) => {
                 (Tag::ATTESTATION_ID_SECOND_IMEI, KeyParameterValue::Blob(v))
             }
@@ -439,7 +458,7 @@ macro_rules! value_of {
             Ok(v)
         } else {
             error!("failed to convert parameter '{}' with value {:?}", stringify!($val), $val);
-            Err(wire::ValueNotRecognized)
+            Err(wire::ValueNotRecognized::$variant)
         }
     }
 }
@@ -451,7 +470,7 @@ macro_rules! check_bool {
         if let keymint::KeyParameterValue::KeyParameterValue::BoolValue(true) = $val.value {
             Ok(())
         } else {
-            Err(wire::ValueNotRecognized)
+            Err(wire::ValueNotRecognized::Bool)
         }
     }
 }
@@ -463,7 +482,7 @@ macro_rules! clone_blob {
         if let keymint::KeyParameterValue::KeyParameterValue::Blob(b) = &$val.value {
             Ok(b.clone())
         } else {
-            Err(wire::ValueNotRecognized)
+            Err(wire::ValueNotRecognized::Blob)
         }
     }
 }
@@ -660,6 +679,7 @@ impl TryFromm<&keymint::KeyParameter::KeyParameter> for Option<KeyParam> {
             keymint::Tag::Tag::ATTESTATION_ID_IMEI => {
                 Some(KeyParam::AttestationIdImei(clone_blob!(val)?))
             }
+            #[cfg(feature = "hal_v3")]
             keymint::Tag::Tag::ATTESTATION_ID_SECOND_IMEI => {
                 Some(KeyParam::AttestationIdSecondImei(clone_blob!(val)?))
             }
@@ -688,7 +708,7 @@ impl TryFromm<&keymint::KeyParameter::KeyParameter> for Option<KeyParam> {
             | keymint::Tag::Tag::ASSOCIATED_DATA
             | keymint::Tag::Tag::CONFIRMATION_TOKEN => {
                 error!("Unsupported tag {:?} encountered", val.tag);
-                return Err(wire::ValueNotRecognized);
+                return Err(wire::ValueNotRecognized::Tag);
             }
             _ => {
                 warn!("Unknown tag {:?} silently dropped", val.tag);

@@ -146,7 +146,7 @@ macro_rules! explicit {
         if let $crate::crypto::OpaqueOr::Explicit(k) = $key {
             Ok(k)
         } else {
-            Err($crate::km_err!(UnknownError, "Expected explicit key but found opaque key!"))
+            Err($crate::km_err!(IncompatibleKeyFormat, "Expected explicit key but found opaque key!"))
         }
     }
 }
@@ -492,7 +492,7 @@ impl<T: Hmac> Hkdf for T {
         let prk = &explicit!(prk)?.0;
         let n = (out_len + SHA256_DIGEST_LEN - 1) / SHA256_DIGEST_LEN;
         if n > 256 {
-            return Err(km_err!(UnknownError, "overflow in hkdf"));
+            return Err(km_err!(InvalidArgument, "overflow in hkdf"));
         }
         let mut t = vec_try_with_capacity!(SHA256_DIGEST_LEN)?;
         let mut okm = vec_try_with_capacity!(n * SHA256_DIGEST_LEN)?;
@@ -551,7 +551,7 @@ impl<T: AesCmac> Ckdf for T {
         }
         if output_pos != output.len() {
             return Err(km_err!(
-                UnknownError,
+                InvalidArgument,
                 "finished at {} before end of output at {}",
                 output_pos,
                 output.len()
