@@ -285,7 +285,7 @@ impl BoringRsaUndigestSignOperation {
         let rsa_key = ossl!(openssl::rsa::Rsa::private_key_from_der(&key.0))?;
         let (left_pad, max_size) = match mode {
             SignMode::NoPadding => (true, rsa_key.size() as usize),
-            SignMode::Pkcs1_1_5Padding(digest) if digest == Digest::None => {
+            SignMode::Pkcs1_1_5Padding(Digest::None) => {
                 (false, (rsa_key.size() as usize) - PKCS1_UNDIGESTED_SIGNATURE_PADDING_OVERHEAD)
             }
             _ => return Err(km_err!(UnsupportedPaddingMode, "sign undigested mode {:?}", mode)),
