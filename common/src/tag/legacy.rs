@@ -1,3 +1,17 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Helper functionality for working with legacy tag serialization.
 
 use crate::{km_err, try_to_vec, vec_try, vec_try_with_capacity, Error, FallibleAllocExt};
@@ -181,12 +195,8 @@ pub fn serialize(params: &[KeyParam]) -> Result<Vec<u8>, Error> {
             | KeyParam::MaxBootLevel(v) => result.try_extend_from_slice(&v.to_ne_bytes())?,
 
             // `u64`-holding variants.
-            KeyParam::RsaPublicExponent(v) => {
-                result.try_extend_from_slice(&(v.0).to_ne_bytes())?
-            }
-            KeyParam::UserSecureId(v) => {
-                result.try_extend_from_slice(&(*v).to_ne_bytes())?
-            }
+            KeyParam::RsaPublicExponent(v) => result.try_extend_from_slice(&(v.0).to_ne_bytes())?,
+            KeyParam::UserSecureId(v) => result.try_extend_from_slice(&(*v).to_ne_bytes())?,
 
             // `true`-holding variants.
             KeyParam::CallerNonce
