@@ -160,6 +160,7 @@ impl crate::KeyMintTa {
         let attest_ext_val =
             if let Some(SigningInfo { attestation_info: Some((challenge, app_id)), .. }) = &info {
                 let unique_id = self.calculate_unique_id(app_id, params)?;
+                let boot_info = self.boot_info_hashed_key()?;
                 let attest_ext = cert::attestation_extension(
                     self.aidl_version as i32,
                     challenge,
@@ -169,9 +170,7 @@ impl crate::KeyMintTa {
                     params,
                     chars,
                     &unique_id,
-                    self.boot_info.as_ref().ok_or_else(|| {
-                        km_err!(HardwareNotYetAvailable, "root of trust info not found")
-                    })?,
+                    &boot_info,
                 )?;
                 Some(
                     cert::asn1_der_encode(&attest_ext)

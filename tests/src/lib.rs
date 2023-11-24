@@ -16,7 +16,7 @@
 
 use core::convert::TryInto;
 use kmr_common::crypto::{
-    aes, des, hmac, Aes, AesCmac, Ckdf, ConstTimeEq, Des, Hkdf, Hmac, MonotonicClock, Rng,
+    aes, des, hmac, Aes, AesCmac, Ckdf, ConstTimeEq, Des, Hkdf, Hmac, MonotonicClock, Rng, Sha256,
     SymmetricOperation,
 };
 use kmr_common::{keyblob, keyblob::SlotPurpose};
@@ -517,6 +517,28 @@ pub fn test_des<D: Des>(des: D) {
         let mut got_pt = op.update(&got_ct).unwrap();
         got_pt.extend_from_slice(&op.finish().unwrap());
         assert_eq!(test.msg, hex::encode(&got_pt));
+    }
+}
+
+/// Test basic SHA-256 functionality.
+pub fn test_sha256<S: Sha256>(sha256: S) {
+    struct TestCase {
+        msg: &'static [u8],
+        want: &'static str,
+    }
+    let tests = vec![
+        TestCase {
+            msg: b"",
+            want: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+        TestCase {
+            msg: b"abc",
+            want: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        },
+    ];
+    for test in tests {
+        let got = sha256.hash(test.msg).unwrap();
+        assert_eq!(hex::encode(got), test.want, "for input {}", hex::encode(test.msg));
     }
 }
 

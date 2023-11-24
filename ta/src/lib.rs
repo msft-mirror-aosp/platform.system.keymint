@@ -26,7 +26,7 @@ use kmr_common::{
     crypto::{self, hmac, OpaqueOr},
     get_bool_tag_value,
     keyblob::{self, RootOfTrustInfo, SecureDeletionSlot},
-    km_err, tag, vec_try, vec_try_with_capacity, Error, FallibleAllocExt,
+    km_err, tag, try_to_vec, vec_try, vec_try_with_capacity, Error, FallibleAllocExt,
 };
 use kmr_wire::{
     coset::TaggedCborSerializable,
@@ -373,6 +373,18 @@ impl KeyMintTa {
         self.boot_info
             .as_ref()
             .ok_or_else(|| km_err!(HardwareNotYetAvailable, "no boot info available"))
+    }
+
+    /// Return a copy of the device's boot information, with the verified boot key
+    /// hashed (if necessary).
+    fn boot_info_hashed_key(&self) -> Result<keymint::BootInfo, Error> {
+        let mut boot_info = self.boot_info()?.clone();
+        if boot_info.verified_boot_key.len() > 32 {
+            // It looks like we have the actual key, not a hash thereof.  Change that.
+            boot_info.verified_boot_key =
+                try_to_vec(&self.imp.sha256.hash(&boot_info.verified_boot_key)?)?;
+        }
+        Ok(boot_info)
     }
 
     /// Parse and decrypt an encrypted key blob, allowing through keys that require upgrade due to
@@ -1079,8 +1091,7 @@ impl KeyMintTa {
             return Err(km_err!(Unimplemented, "root-of-trust retrieval not for StrongBox"));
         }
         let payload = self
-            .boot_info()?
-            .clone()
+            .boot_info_hashed_key()?
             .to_tagged_vec()
             .map_err(|_e| km_err!(EncodingError, "Failed to CBOR-encode RootOfTrust"))?;
 
