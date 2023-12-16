@@ -36,6 +36,7 @@ pub mod eq;
 pub mod hmac;
 pub mod rng;
 pub mod rsa;
+pub mod sha256;
 
 #[cfg(soong)]
 mod err;
