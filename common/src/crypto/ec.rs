@@ -17,9 +17,9 @@
 use super::{CurveType, KeyMaterial, OpaqueOr};
 use crate::{der_err, km_err, try_to_vec, vec_try, Error, FallibleAllocExt};
 use alloc::vec::Vec;
-use der::{AnyRef, Decode, Encode, Sequence};
+use der::{asn1::BitStringRef, AnyRef, Decode, Encode, Sequence};
 use kmr_wire::{coset, keymint::EcCurve, rpc, KeySizeInBits};
-use spki::{AlgorithmIdentifier, SubjectPublicKeyInfo};
+use spki::{AlgorithmIdentifier, SubjectPublicKeyInfo, SubjectPublicKeyInfoRef};
 use zeroize::ZeroizeOnDrop;
 
 /// Size (in bytes) of a curve 25519 private key.
@@ -163,7 +163,7 @@ impl OpaqueOr<Key> {
         ec: &dyn super::Ec,
         curve: &EcCurve,
         curve_type: &CurveType,
-    ) -> Result<SubjectPublicKeyInfo<'a>, Error> {
+    ) -> Result<SubjectPublicKeyInfoRef<'a>, Error> {
         buf.try_extend_from_slice(&ec.subject_public_key(self)?)?;
         let (oid, parameters) = match curve_type {
             CurveType::Nist => {
@@ -181,7 +181,7 @@ impl OpaqueOr<Key> {
         };
         Ok(SubjectPublicKeyInfo {
             algorithm: AlgorithmIdentifier { oid, parameters },
-            subject_public_key: buf,
+            subject_public_key: BitStringRef::from_bytes(buf).unwrap(),
         })
     }
 
@@ -415,7 +415,7 @@ fn import_pkcs8_key_impl(key_info: &pkcs8::PrivateKeyInfo) -> Result<KeyMaterial
                 )
             })?;
             let curve_oid = algo_params
-                .oid()
+                .decode_as()
                 .map_err(|_e| km_err!(InvalidArgument, "imported key has no OID parameter"))?;
             let (curve, key) = match curve_oid {
                 ALGO_PARAM_P224_OID => {
@@ -542,13 +542,13 @@ pub fn from_cose_signature(curve: EcCurve, sig: &[u8]) -> Result<Vec<u8>, Error>
 
             // NIST curve signatures need to be emitted as a DER-encoded `SEQUENCE`.
             let der_sig = NistSignature {
-                r: der::asn1::UIntRef::new(&sig[..l])
+                r: der::asn1::UintRef::new(&sig[..l])
                     .map_err(|e| km_err!(EncodingError, "failed to build INTEGER: {:?}", e))?,
-                s: der::asn1::UIntRef::new(&sig[l..])
+                s: der::asn1::UintRef::new(&sig[l..])
                     .map_err(|e| km_err!(EncodingError, "failed to build INTEGER: {:?}", e))?,
             };
             der_sig
-                .to_vec()
+                .to_der()
                 .map_err(|e| km_err!(EncodingError, "failed to encode signature SEQUENCE: {:?}", e))
         }
         EcCurve::Curve25519 => {
@@ -567,8 +567,8 @@ pub fn from_cose_signature(curve: EcCurve, sig: &[u8]) -> Result<Vec<u8>, Error>
 /// ```
 #[derive(Sequence)]
 struct NistSignature<'a> {
-    r: der::asn1::UIntRef<'a>,
-    s: der::asn1::UIntRef<'a>,
+    r: der::asn1::UintRef<'a>,
+    s: der::asn1::UintRef<'a>,
 }
 
 #[cfg(test)]
