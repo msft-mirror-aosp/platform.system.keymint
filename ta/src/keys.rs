@@ -18,7 +18,7 @@ use crate::{cert, device, AttestationChainInfo};
 use alloc::collections::btree_map::Entry;
 use alloc::vec::Vec;
 use core::{borrow::Borrow, cmp::Ordering, convert::TryFrom};
-use der::{Decode, Sequence};
+use der::{referenced::RefToOwned, Decode, Sequence};
 use kmr_common::{
     crypto::{self, aes, rsa, KeyMaterial, OpaqueOr},
     der_err, get_bool_tag_value, get_opt_tag_value, get_tag_value, keyblob, km_err, tag,
@@ -33,7 +33,7 @@ use kmr_wire::{
     *,
 };
 use log::{error, warn};
-use spki::SubjectPublicKeyInfo;
+use spki::SubjectPublicKeyInfoOwned;
 use x509_cert::ext::pkix::KeyUsages;
 
 /// Maximum size of an attestation challenge value.
@@ -134,7 +134,7 @@ impl crate::KeyMintTa {
     pub(crate) fn generate_cert(
         &self,
         info: Option<SigningInfo>,
-        spki: SubjectPublicKeyInfo,
+        spki: SubjectPublicKeyInfoOwned,
         params: &[KeyParam],
         chars: &[KeyCharacteristics],
     ) -> Result<keymint::Certificate, Error> {
@@ -466,7 +466,8 @@ impl crate::KeyMintTa {
             };
 
             // Build the X.509 leaf certificate.
-            let leaf_cert = self.generate_cert(signing_info.clone(), spki, params, &chars)?;
+            let leaf_cert =
+                self.generate_cert(signing_info.clone(), spki.ref_to_owned(), params, &chars)?;
             certificate_chain.try_push(leaf_cert)?;
 
             // Append the rest of the chain.

@@ -209,7 +209,7 @@ fn test_key_description_encode_decode() {
     let encoded_bytes = hex::decode(encoded_secure_key_wrapper).unwrap();
     let secure_key_wrapper = SecureKeyWrapper::from_der(&encoded_bytes).unwrap();
     let key_description = secure_key_wrapper.key_description;
-    let encoded_key_description_got = key_description.to_vec().unwrap();
+    let encoded_key_description_got = key_description.to_der().unwrap();
     assert_eq!(hex::encode(encoded_key_description_got), encoded_key_description_want);
 }
 
