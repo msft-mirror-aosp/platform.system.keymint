@@ -30,7 +30,7 @@ use kmr_derive::AsCborValue;
 use kmr_wire::keymint::{Algorithm, Digest, EcCurve};
 use kmr_wire::{cbor, cbor_type_error, AsCborValue, CborError, KeySizeInBits, RsaExponent};
 use log::error;
-use spki::SubjectPublicKeyInfo;
+use spki::SubjectPublicKeyInfoRef;
 use zeroize::ZeroizeOnDrop;
 
 pub mod aes;
@@ -198,7 +198,7 @@ impl KeyMaterial {
         buf: &'a mut Vec<u8>,
         ec: &dyn Ec,
         rsa: &dyn Rsa,
-    ) -> Result<Option<SubjectPublicKeyInfo<'a>>, Error> {
+    ) -> Result<Option<SubjectPublicKeyInfoRef<'a>>, Error> {
         Ok(match self {
             Self::Rsa(key) => Some(key.subject_public_key_info(buf, rsa)?),
             Self::Ec(curve, curve_type, key) => {
