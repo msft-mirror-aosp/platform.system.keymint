@@ -113,7 +113,7 @@ impl crate::KeyMintTa {
                 // Retrieve and store the cert chain information (as this is public).
                 let chain = self.dev.sign_info.cert_chain(key_type)?;
                 let issuer =
-                    cert::extract_subject(chain.get(0).ok_or_else(|| {
+                    cert::extract_subject(chain.first().ok_or_else(|| {
                         km_err!(KeymintNotConfigured, "empty attestation chain")
                     })?)?;
                 e.insert(AttestationChainInfo { chain, issuer })

@@ -927,9 +927,7 @@ fn decode_tag_from_bytes<'a, R: der::Reader<'a>>(
 // together with an extra variant that deals with OCTET STRING values that must match
 // a provisioned attestation ID value.
 macro_rules! asn1_set_of_integer {
-    {
-        $writer:ident, $params:expr, $variant:ident
-    } => {
+    { $params:expr, $variant:ident } => {
         {
             let mut results = Vec::new();
             for param in $params.as_ref() {
@@ -952,228 +950,107 @@ macro_rules! asn1_set_of_integer {
                     set.insert_ordered(val)?;
                     prev_val = Some(val);
                 }
-                ExplicitTaggedValue {
+                Some(ExplicitTaggedValue {
                     tag: raw_tag_value(Tag::$variant),
                     val: set,
-                }.encode($writer)?;
-            }
-        }
-    }
-}
-macro_rules! asn1_set_of_integer_len {
-    {
-        $params:expr, $variant:ident
-    } => {
-        {
-            let mut results = Vec::new();
-            for param in $params.as_ref() {
-                if let KeyParam::$variant(v) = param {
-                    results.try_push(v.clone()).map_err(der_alloc_err)?;
-                }
-            }
-            if results.is_empty() {
-                Length::ZERO
+                })
             } else {
-                // The input key characteristics have been sorted and so are in numerical order, but
-                // may contain duplicates that need to be weeded out.
-                let mut set = der::asn1::SetOfVec::new();
-                let mut prev_val = None;
-                for val in results {
-                    let val = val as i64;
-                    if let Some(prev) = prev_val {
-                        if prev == val {
-                            continue; // skip duplicate
-                        }
-                    }
-                    set.insert_ordered(val)?;
-                    prev_val = Some(val);
-                }
-                ExplicitTaggedValue {
-                    tag: raw_tag_value(Tag::$variant),
-                    val: set,
-                }.encoded_len()?
+                None
             }
         }
     }
 }
 macro_rules! asn1_integer {
-    {
-        $writer:ident, $params:expr, $variant:ident
-    } => {
-        {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
-                log::warn!("failed to get {} value for ext", stringify!($variant));
-                der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
-            })? {
-                    ExplicitTaggedValue {
-                        tag: raw_tag_value(Tag::$variant),
-                        val: *val as i64
-                    }.encode($writer)?;
-            }
-        }
-    }
-}
-macro_rules! asn1_integer_len {
-    {
-        $params:expr, $variant:ident
-    } => {
-        {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
-                log::warn!("failed to get {} value for ext", stringify!($variant));
-                der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
-            })? {
-                    ExplicitTaggedValue {
-                        tag: raw_tag_value(Tag::$variant),
-                        val: *val as i64
-                    }.encoded_len()?
-            } else {
-                Length::ZERO
-            }
+    { $params:expr, $variant:ident } => {
+        if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
+            log::warn!("failed to get {} value for ext", stringify!($variant));
+            der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
+        })? {
+            Some(ExplicitTaggedValue {
+                tag: raw_tag_value(Tag::$variant),
+                val: *val as i64
+            })
+        } else {
+            None
         }
     }
 }
 macro_rules! asn1_integer_newtype {
-    {
-        $writer:ident, $params:expr, $variant:ident
-    } => {
-        {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
-                log::warn!("failed to get {} value for ext", stringify!($variant));
-                der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
-            })? {
-                    ExplicitTaggedValue {
-                        tag: raw_tag_value(Tag::$variant),
-                        val: val.0 as i64
-                    }.encode($writer)?;
-            }
-        }
-    }
-}
-macro_rules! asn1_integer_newtype_len {
-    {
-        $params:expr, $variant:ident
-    } => {
-        {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
-                log::warn!("failed to get {} value for ext", stringify!($variant));
-                der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
-            })? {
-                    ExplicitTaggedValue {
-                        tag: raw_tag_value(Tag::$variant),
-                        val: val.0 as i64
-                    }.encoded_len()?
-            } else {
-                Length::ZERO
-            }
+    { $params:expr, $variant:ident } => {
+        if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
+            log::warn!("failed to get {} value for ext", stringify!($variant));
+            der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
+        })? {
+            Some(ExplicitTaggedValue {
+                tag: raw_tag_value(Tag::$variant),
+                val: val.0 as i64
+            })
+        } else {
+            None
         }
     }
 }
 macro_rules! asn1_integer_datetime {
-    {
-        $writer:ident, $params:expr, $variant:ident
-    } => {
-        {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
-                log::warn!("failed to get {} value for ext", stringify!($variant));
-                der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
-            })? {
-                    ExplicitTaggedValue {
-                        tag: raw_tag_value(Tag::$variant),
-                        val: val.ms_since_epoch
-                    }.encode($writer)?;
-            }
-        }
-    }
-}
-macro_rules! asn1_integer_datetime_len {
-    {
-        $params:expr, $variant:ident
-    } => {
-        {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
-                log::warn!("failed to get {} value for ext", stringify!($variant));
-                der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
-            })? {
-                    ExplicitTaggedValue {
-                        tag: raw_tag_value(Tag::$variant),
-                        val: val.ms_since_epoch
-                    }.encoded_len()?
-            } else {
-                Length::ZERO
-            }
+    { $params:expr, $variant:ident } => {
+        if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
+            log::warn!("failed to get {} value for ext", stringify!($variant));
+            der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
+        })? {
+            Some(ExplicitTaggedValue {
+                tag: raw_tag_value(Tag::$variant),
+                val: val.ms_since_epoch
+            })
+        } else {
+            None
         }
     }
 }
 macro_rules! asn1_null {
-    {
-        $writer:ident, $params:expr, $variant:ident
-    } => {
-        {
-            if get_bool_tag_value!($params.as_ref(), $variant).map_err(|_e| {
-                log::warn!("failed to get {} value for ext", stringify!($variant));
-                der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
-            })? {
-                    ExplicitTaggedValue {
-                        tag: raw_tag_value(Tag::$variant),
-                        val: ()
-                    }.encode($writer)?;
-            }
-        }
-    }
-}
-macro_rules! asn1_null_len {
-    {
-        $params:expr, $variant:ident
-    } => {
-        {
-            if get_bool_tag_value!($params.as_ref(), $variant).map_err(|_e| {
-                log::warn!("failed to get {} value for ext", stringify!($variant));
-                der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
-            })? {
-                    ExplicitTaggedValue {
-                        tag: raw_tag_value(Tag::$variant),
-                        val: ()
-                    }.encoded_len()?
-            } else {
-                Length::ZERO
-            }
+    { $params:expr, $variant:ident } => {
+        if get_bool_tag_value!($params.as_ref(), $variant).map_err(|_e| {
+            log::warn!("failed to get {} value for ext", stringify!($variant));
+            der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
+        })? {
+            Some(ExplicitTaggedValue {
+                tag: raw_tag_value(Tag::$variant),
+                val: ()
+            })
+        } else {
+            None
         }
     }
 }
 macro_rules! asn1_octet_string {
-    {
-        $writer:ident, $params:expr, $variant:ident
-    } => {
-        {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
-                log::warn!("failed to get {} value for ext", stringify!($variant));
-                der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
-            })? {
-                    ExplicitTaggedValue {
-                        tag: raw_tag_value(Tag::$variant),
-                        val: der::asn1::OctetStringRef::new(val)?,
-                    }.encode($writer)?;
-            }
+    { $params:expr, $variant:ident } => {
+        if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
+            log::warn!("failed to get {} value for ext", stringify!($variant));
+            der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
+        })? {
+            Some(ExplicitTaggedValue {
+                tag: raw_tag_value(Tag::$variant),
+                val: der::asn1::OctetStringRef::new(val)?,
+            })
+        } else {
+            None
         }
     }
 }
-macro_rules! asn1_octet_string_len {
-    {
-        $params:expr, $variant:ident
-    } => {
-        {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
-                log::warn!("failed to get {} value for ext", stringify!($variant));
-                der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
-            })? {
-                    ExplicitTaggedValue {
-                        tag: raw_tag_value(Tag::$variant),
-                        val: der::asn1::OctetStringRef::new(val)?,
-                    }.encoded_len()?
-            } else {
-                Length::ZERO
-            }
-        }
+
+fn asn1_val<T: Encode>(
+    val: Option<ExplicitTaggedValue<T>>,
+    writer: &mut impl der::Writer,
+) -> der::Result<()> {
+    if let Some(val) = val {
+        val.encode(writer)
+    } else {
+        Ok(())
+    }
+}
+
+fn asn1_len<T: Encode>(val: Option<ExplicitTaggedValue<T>>) -> der::Result<Length> {
+    match val {
+        Some(val) => val.encoded_len(),
+        None => Ok(Length::ZERO),
     }
 }
 
@@ -1181,32 +1058,32 @@ impl<'a> Sequence<'a> for AuthorizationList<'a> {}
 
 impl<'a> EncodeValue for AuthorizationList<'a> {
     fn value_len(&self) -> der::Result<Length> {
-        let mut length = asn1_set_of_integer_len!(self.auths, Purpose)
-            + asn1_integer_len!(self.auths, Algorithm)
-            + asn1_integer_newtype_len!(self.auths, KeySize)
-            + asn1_set_of_integer_len!(self.auths, BlockMode)
-            + asn1_set_of_integer_len!(self.auths, Digest)
-            + asn1_set_of_integer_len!(self.auths, Padding)
-            + asn1_null_len!(self.auths, CallerNonce)
-            + asn1_integer_len!(self.auths, MinMacLength)
-            + asn1_integer_len!(self.auths, EcCurve)
-            + asn1_integer_newtype_len!(self.auths, RsaPublicExponent)
-            + asn1_set_of_integer_len!(self.auths, RsaOaepMgfDigest)
-            + asn1_null_len!(self.auths, RollbackResistance)
-            + asn1_null_len!(self.auths, EarlyBootOnly)
-            + asn1_integer_datetime_len!(self.auths, ActiveDatetime)
-            + asn1_integer_datetime_len!(self.auths, OriginationExpireDatetime)
-            + asn1_integer_datetime_len!(self.auths, UsageExpireDatetime)
-            + asn1_integer_len!(self.auths, UsageCountLimit)
-            + asn1_null_len!(self.auths, NoAuthRequired)
-            + asn1_integer_len!(self.auths, UserAuthType)
-            + asn1_integer_len!(self.auths, AuthTimeout)
-            + asn1_null_len!(self.auths, AllowWhileOnBody)
-            + asn1_null_len!(self.auths, TrustedUserPresenceRequired)
-            + asn1_null_len!(self.auths, TrustedConfirmationRequired)
-            + asn1_null_len!(self.auths, UnlockedDeviceRequired)
-            + asn1_integer_datetime_len!(self.auths, CreationDatetime)
-            + asn1_integer_len!(self.auths, Origin);
+        let mut length = asn1_len(asn1_set_of_integer!(self.auths, Purpose))?
+            + asn1_len(asn1_integer!(self.auths, Algorithm))?
+            + asn1_len(asn1_integer_newtype!(self.auths, KeySize))?
+            + asn1_len(asn1_set_of_integer!(self.auths, BlockMode))?
+            + asn1_len(asn1_set_of_integer!(self.auths, Digest))?
+            + asn1_len(asn1_set_of_integer!(self.auths, Padding))?
+            + asn1_len(asn1_null!(self.auths, CallerNonce))?
+            + asn1_len(asn1_integer!(self.auths, MinMacLength))?
+            + asn1_len(asn1_integer!(self.auths, EcCurve))?
+            + asn1_len(asn1_integer_newtype!(self.auths, RsaPublicExponent))?
+            + asn1_len(asn1_set_of_integer!(self.auths, RsaOaepMgfDigest))?
+            + asn1_len(asn1_null!(self.auths, RollbackResistance))?
+            + asn1_len(asn1_null!(self.auths, EarlyBootOnly))?
+            + asn1_len(asn1_integer_datetime!(self.auths, ActiveDatetime))?
+            + asn1_len(asn1_integer_datetime!(self.auths, OriginationExpireDatetime))?
+            + asn1_len(asn1_integer_datetime!(self.auths, UsageExpireDatetime))?
+            + asn1_len(asn1_integer!(self.auths, UsageCountLimit))?
+            + asn1_len(asn1_null!(self.auths, NoAuthRequired))?
+            + asn1_len(asn1_integer!(self.auths, UserAuthType))?
+            + asn1_len(asn1_integer!(self.auths, AuthTimeout))?
+            + asn1_len(asn1_null!(self.auths, AllowWhileOnBody))?
+            + asn1_len(asn1_null!(self.auths, TrustedUserPresenceRequired))?
+            + asn1_len(asn1_null!(self.auths, TrustedConfirmationRequired))?
+            + asn1_len(asn1_null!(self.auths, UnlockedDeviceRequired))?
+            + asn1_len(asn1_integer_datetime!(self.auths, CreationDatetime))?
+            + asn1_len(asn1_integer!(self.auths, Origin))?;
         if let Some(KeyParam::RootOfTrust(encoded_rot_info)) = &self.rot_info {
             length = length
                 + ExplicitTaggedValue {
@@ -1216,8 +1093,8 @@ impl<'a> EncodeValue for AuthorizationList<'a> {
                 .encoded_len()?;
         }
         length = length
-            + asn1_integer_len!(self.auths, OsVersion)
-            + asn1_integer_len!(self.auths, OsPatchlevel);
+            + asn1_len(asn1_integer!(self.auths, OsVersion))?
+            + asn1_len(asn1_integer!(self.auths, OsPatchlevel))?;
         if let Some(KeyParam::AttestationApplicationId(app_id)) = &self.app_id {
             length = length
                 + ExplicitTaggedValue {
@@ -1227,50 +1104,50 @@ impl<'a> EncodeValue for AuthorizationList<'a> {
                 .encoded_len()?;
         }
         length = length
-            + asn1_octet_string_len!(&self.keygen_params, AttestationIdBrand)
-            + asn1_octet_string_len!(&self.keygen_params, AttestationIdDevice)
-            + asn1_octet_string_len!(&self.keygen_params, AttestationIdProduct)
-            + asn1_octet_string_len!(&self.keygen_params, AttestationIdSerial)
-            + asn1_octet_string_len!(&self.keygen_params, AttestationIdImei)
-            + asn1_octet_string_len!(&self.keygen_params, AttestationIdMeid)
-            + asn1_octet_string_len!(&self.keygen_params, AttestationIdManufacturer)
-            + asn1_octet_string_len!(&self.keygen_params, AttestationIdModel)
-            + asn1_integer_len!(self.auths, VendorPatchlevel)
-            + asn1_integer_len!(self.auths, BootPatchlevel)
-            + asn1_null_len!(self.auths, DeviceUniqueAttestation)
-            + asn1_octet_string_len!(&self.keygen_params, AttestationIdSecondImei);
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdBrand))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdDevice))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdProduct))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdSerial))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdImei))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdMeid))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdManufacturer))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdModel))?
+            + asn1_len(asn1_integer!(self.auths, VendorPatchlevel))?
+            + asn1_len(asn1_integer!(self.auths, BootPatchlevel))?
+            + asn1_len(asn1_null!(self.auths, DeviceUniqueAttestation))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdSecondImei))?;
         length
     }
 
     fn encode_value(&self, writer: &mut impl der::Writer) -> der::Result<()> {
-        asn1_set_of_integer!(writer, self.auths, Purpose);
-        asn1_integer!(writer, self.auths, Algorithm);
-        asn1_integer_newtype!(writer, self.auths, KeySize);
-        asn1_set_of_integer!(writer, self.auths, BlockMode);
-        asn1_set_of_integer!(writer, self.auths, Digest);
-        asn1_set_of_integer!(writer, self.auths, Padding);
-        asn1_null!(writer, self.auths, CallerNonce);
-        asn1_integer!(writer, self.auths, MinMacLength);
-        asn1_integer!(writer, self.auths, EcCurve);
-        asn1_integer_newtype!(writer, self.auths, RsaPublicExponent);
-        asn1_set_of_integer!(writer, self.auths, RsaOaepMgfDigest);
-        asn1_null!(writer, self.auths, RollbackResistance);
-        asn1_null!(writer, self.auths, EarlyBootOnly);
-        asn1_integer_datetime!(writer, self.auths, ActiveDatetime);
-        asn1_integer_datetime!(writer, self.auths, OriginationExpireDatetime);
-        asn1_integer_datetime!(writer, self.auths, UsageExpireDatetime);
-        asn1_integer!(writer, self.auths, UsageCountLimit);
+        asn1_val(asn1_set_of_integer!(self.auths, Purpose), writer)?;
+        asn1_val(asn1_integer!(self.auths, Algorithm), writer)?;
+        asn1_val(asn1_integer_newtype!(self.auths, KeySize), writer)?;
+        asn1_val(asn1_set_of_integer!(self.auths, BlockMode), writer)?;
+        asn1_val(asn1_set_of_integer!(self.auths, Digest), writer)?;
+        asn1_val(asn1_set_of_integer!(self.auths, Padding), writer)?;
+        asn1_val(asn1_null!(self.auths, CallerNonce), writer)?;
+        asn1_val(asn1_integer!(self.auths, MinMacLength), writer)?;
+        asn1_val(asn1_integer!(self.auths, EcCurve), writer)?;
+        asn1_val(asn1_integer_newtype!(self.auths, RsaPublicExponent), writer)?;
+        asn1_val(asn1_set_of_integer!(self.auths, RsaOaepMgfDigest), writer)?;
+        asn1_val(asn1_null!(self.auths, RollbackResistance), writer)?;
+        asn1_val(asn1_null!(self.auths, EarlyBootOnly), writer)?;
+        asn1_val(asn1_integer_datetime!(self.auths, ActiveDatetime), writer)?;
+        asn1_val(asn1_integer_datetime!(self.auths, OriginationExpireDatetime), writer)?;
+        asn1_val(asn1_integer_datetime!(self.auths, UsageExpireDatetime), writer)?;
+        asn1_val(asn1_integer!(self.auths, UsageCountLimit), writer)?;
         // Skip `UserSecureId` as it's only included in the extension for
         // importWrappedKey() cases.
-        asn1_null!(writer, self.auths, NoAuthRequired);
-        asn1_integer!(writer, self.auths, UserAuthType);
-        asn1_integer!(writer, self.auths, AuthTimeout);
-        asn1_null!(writer, self.auths, AllowWhileOnBody);
-        asn1_null!(writer, self.auths, TrustedUserPresenceRequired);
-        asn1_null!(writer, self.auths, TrustedConfirmationRequired);
-        asn1_null!(writer, self.auths, UnlockedDeviceRequired);
-        asn1_integer_datetime!(writer, self.auths, CreationDatetime);
-        asn1_integer!(writer, self.auths, Origin);
+        asn1_val(asn1_null!(self.auths, NoAuthRequired), writer)?;
+        asn1_val(asn1_integer!(self.auths, UserAuthType), writer)?;
+        asn1_val(asn1_integer!(self.auths, AuthTimeout), writer)?;
+        asn1_val(asn1_null!(self.auths, AllowWhileOnBody), writer)?;
+        asn1_val(asn1_null!(self.auths, TrustedUserPresenceRequired), writer)?;
+        asn1_val(asn1_null!(self.auths, TrustedConfirmationRequired), writer)?;
+        asn1_val(asn1_null!(self.auths, UnlockedDeviceRequired), writer)?;
+        asn1_val(asn1_integer_datetime!(self.auths, CreationDatetime), writer)?;
+        asn1_val(asn1_integer!(self.auths, Origin), writer)?;
         // Root of trust info is a special case (not in key characteristics).
         if let Some(KeyParam::RootOfTrust(encoded_rot_info)) = &self.rot_info {
             ExplicitTaggedValue {
@@ -1279,8 +1156,8 @@ impl<'a> EncodeValue for AuthorizationList<'a> {
             }
             .encode(writer)?;
         }
-        asn1_integer!(writer, self.auths, OsVersion);
-        asn1_integer!(writer, self.auths, OsPatchlevel);
+        asn1_val(asn1_integer!(self.auths, OsVersion), writer)?;
+        asn1_val(asn1_integer!(self.auths, OsPatchlevel), writer)?;
         // Attestation application ID is a special case (not in key characteristics).
         if let Some(KeyParam::AttestationApplicationId(app_id)) = &self.app_id {
             ExplicitTaggedValue {
@@ -1290,18 +1167,18 @@ impl<'a> EncodeValue for AuthorizationList<'a> {
             .encode(writer)?;
         }
         // Accuracy of attestation IDs has already been checked, so just copy across.
-        asn1_octet_string!(writer, &self.keygen_params, AttestationIdBrand);
-        asn1_octet_string!(writer, &self.keygen_params, AttestationIdDevice);
-        asn1_octet_string!(writer, &self.keygen_params, AttestationIdProduct);
-        asn1_octet_string!(writer, &self.keygen_params, AttestationIdSerial);
-        asn1_octet_string!(writer, &self.keygen_params, AttestationIdImei);
-        asn1_octet_string!(writer, &self.keygen_params, AttestationIdMeid);
-        asn1_octet_string!(writer, &self.keygen_params, AttestationIdManufacturer);
-        asn1_octet_string!(writer, &self.keygen_params, AttestationIdModel);
-        asn1_integer!(writer, self.auths, VendorPatchlevel);
-        asn1_integer!(writer, self.auths, BootPatchlevel);
-        asn1_null!(writer, self.auths, DeviceUniqueAttestation);
-        asn1_octet_string!(writer, &self.keygen_params, AttestationIdSecondImei);
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdBrand), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdDevice), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdProduct), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdSerial), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdImei), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdMeid), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdManufacturer), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdModel), writer)?;
+        asn1_val(asn1_integer!(self.auths, VendorPatchlevel), writer)?;
+        asn1_val(asn1_integer!(self.auths, BootPatchlevel), writer)?;
+        asn1_val(asn1_null!(self.auths, DeviceUniqueAttestation), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdSecondImei), writer)?;
 
         Ok(())
     }
