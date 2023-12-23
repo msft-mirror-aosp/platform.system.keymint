@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! Rust types definitions for BoringSSL objects.
-use bssl_ffi as ffi;
+use bssl_sys as ffi;
 
 /// New type for `*mut ffi::CMAC_CTX` to implement `Send` for it. This allow us to still check if a
 /// `!Send` item is added to `BoringAesCmacOperation`

@@ -21,7 +21,7 @@ rust_defaults {
     edition: "2021",
     lints: "android",
     rustlibs: [
-        "libbssl_ffi",
+        "libbssl_sys",
         "libforeign_types",
         "liblibc",
         "liblog_rust",
