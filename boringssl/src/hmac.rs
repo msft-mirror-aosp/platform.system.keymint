@@ -18,7 +18,7 @@ use crate::{malloc_err, openssl_last_err};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 #[cfg(soong)]
-use bssl_ffi as ffi;
+use bssl_sys as ffi;
 use kmr_common::{crypto, crypto::OpaqueOr, explicit, km_err, vec_try, Error};
 use kmr_wire::keymint::Digest;
 use log::error;
