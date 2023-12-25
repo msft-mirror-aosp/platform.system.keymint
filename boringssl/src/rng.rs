@@ -14,7 +14,7 @@
 
 //! BoringSSL-based implementation of random number generation.
 #[cfg(soong)]
-use bssl_ffi as ffi;
+use bssl_sys as ffi;
 use kmr_common::crypto;
 
 /// [`crypto::Rng`] implementation based on BoringSSL.

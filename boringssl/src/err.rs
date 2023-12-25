@@ -14,7 +14,7 @@
 
 //! Error mapping functionality.
 
-use bssl_ffi as ffi;
+use bssl_sys as ffi;
 use core::convert::TryFrom;
 use kmr_wire::keymint::ErrorCode;
 use log::error;
