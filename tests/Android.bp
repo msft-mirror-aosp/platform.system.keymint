@@ -27,7 +27,6 @@ rust_defaults {
         "libkmr_common",
         "libkmr_ta",
         "libkmr_wire",
-        "liblazy_static",
         "liblog_rust",
         "libx509_cert"
     ],
