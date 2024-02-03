@@ -17,10 +17,10 @@
 use super::{KeyMaterial, KeySizeInBits, OpaqueOr, RsaExponent};
 use crate::{der_err, km_err, tag, try_to_vec, Error, FallibleAllocExt};
 use alloc::vec::Vec;
-use der::{Decode, Encode};
+use der::{asn1::BitStringRef, Decode, Encode};
 use kmr_wire::keymint::{Digest, KeyParam, PaddingMode};
 use pkcs1::RsaPrivateKey;
-use spki::{AlgorithmIdentifier, SubjectPublicKeyInfo};
+use spki::{AlgorithmIdentifier, SubjectPublicKeyInfo, SubjectPublicKeyInfoRef};
 use zeroize::ZeroizeOnDrop;
 
 /// Overhead for PKCS#1 v1.5 signature padding of undigested messages.  Digested messages have
@@ -125,12 +125,12 @@ impl OpaqueOr<Key> {
         &'a self,
         buf: &'a mut Vec<u8>,
         rsa: &dyn super::Rsa,
-    ) -> Result<SubjectPublicKeyInfo<'a>, Error> {
+    ) -> Result<SubjectPublicKeyInfoRef<'a>, Error> {
         let pub_key = rsa.subject_public_key(self)?;
         buf.try_extend_from_slice(&pub_key)?;
         Ok(SubjectPublicKeyInfo {
             algorithm: AlgorithmIdentifier { oid: X509_OID, parameters: Some(der::AnyRef::NULL) },
-            subject_public_key: buf,
+            subject_public_key: BitStringRef::from_bytes(buf).unwrap(),
         })
     }
 }

@@ -18,7 +18,7 @@ use crate::{cert, device, AttestationChainInfo};
 use alloc::collections::btree_map::Entry;
 use alloc::vec::Vec;
 use core::{borrow::Borrow, cmp::Ordering, convert::TryFrom};
-use der::{Decode, Sequence};
+use der::{referenced::RefToOwned, Decode, Sequence};
 use kmr_common::{
     crypto::{self, aes, rsa, KeyMaterial, OpaqueOr},
     der_err, get_bool_tag_value, get_opt_tag_value, get_tag_value, keyblob, km_err, tag,
@@ -33,7 +33,7 @@ use kmr_wire::{
     *,
 };
 use log::{error, warn};
-use spki::SubjectPublicKeyInfo;
+use spki::SubjectPublicKeyInfoOwned;
 use x509_cert::ext::pkix::KeyUsages;
 
 /// Maximum size of an attestation challenge value.
@@ -113,7 +113,7 @@ impl crate::KeyMintTa {
                 // Retrieve and store the cert chain information (as this is public).
                 let chain = self.dev.sign_info.cert_chain(key_type)?;
                 let issuer =
-                    cert::extract_subject(chain.get(0).ok_or_else(|| {
+                    cert::extract_subject(chain.first().ok_or_else(|| {
                         km_err!(KeymintNotConfigured, "empty attestation chain")
                     })?)?;
                 e.insert(AttestationChainInfo { chain, issuer })
@@ -134,7 +134,7 @@ impl crate::KeyMintTa {
     pub(crate) fn generate_cert(
         &self,
         info: Option<SigningInfo>,
-        spki: SubjectPublicKeyInfo,
+        spki: SubjectPublicKeyInfoOwned,
         params: &[KeyParam],
         chars: &[KeyCharacteristics],
     ) -> Result<keymint::Certificate, Error> {
@@ -160,6 +160,7 @@ impl crate::KeyMintTa {
         let attest_ext_val =
             if let Some(SigningInfo { attestation_info: Some((challenge, app_id)), .. }) = &info {
                 let unique_id = self.calculate_unique_id(app_id, params)?;
+                let boot_info = self.boot_info_hashed_key()?;
                 let attest_ext = cert::attestation_extension(
                     self.aidl_version as i32,
                     challenge,
@@ -169,9 +170,7 @@ impl crate::KeyMintTa {
                     params,
                     chars,
                     &unique_id,
-                    self.boot_info.as_ref().ok_or_else(|| {
-                        km_err!(HardwareNotYetAvailable, "root of trust info not found")
-                    })?,
+                    &boot_info,
                 )?;
                 Some(
                     cert::asn1_der_encode(&attest_ext)
@@ -467,7 +466,8 @@ impl crate::KeyMintTa {
             };
 
             // Build the X.509 leaf certificate.
-            let leaf_cert = self.generate_cert(signing_info.clone(), spki, params, &chars)?;
+            let leaf_cert =
+                self.generate_cert(signing_info.clone(), spki.ref_to_owned(), params, &chars)?;
             certificate_chain.try_push(leaf_cert)?;
 
             // Append the rest of the chain.

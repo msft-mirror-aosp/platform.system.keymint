@@ -18,7 +18,7 @@ use crate::{cvt, cvt_p, digest_into_openssl, openssl_err, openssl_last_err, ossl
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 #[cfg(soong)]
-use bssl_ffi as ffi;
+use bssl_sys as ffi;
 use core::ptr;
 use foreign_types::ForeignType;
 use kmr_common::crypto::{

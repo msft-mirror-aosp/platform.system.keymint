@@ -52,6 +52,9 @@ pub struct Implementation {
 
     /// HKDF implementation.
     pub hkdf: Box<dyn Hkdf>,
+
+    /// SHA-256 implementation.
+    pub sha256: Box<dyn Sha256>,
 }
 
 /// Abstraction of a random number generator that is cryptographically secure
@@ -469,6 +472,12 @@ pub trait Ckdf: Send {
         chunks: &[&[u8]],
         out_len: usize,
     ) -> Result<Vec<u8>, Error>;
+}
+
+/// Abstraction for SHA-256 hashing.
+pub trait Sha256: Send {
+    /// Generate the SHA-256 input of `data`.
+    fn hash(&self, data: &[u8]) -> Result<[u8; 32], Error>;
 }
 
 ////////////////////////////////////////////////////////////

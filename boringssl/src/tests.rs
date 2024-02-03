@@ -60,3 +60,8 @@ fn test_aes_gcm() {
 fn test_des() {
     kmr_tests::test_des(des::BoringDes {});
 }
+
+#[test]
+fn test_sha256() {
+    kmr_tests::test_sha256(sha256::BoringSha256 {});
+}

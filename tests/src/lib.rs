@@ -16,7 +16,7 @@
 
 use core::convert::TryInto;
 use kmr_common::crypto::{
-    aes, des, hmac, Aes, AesCmac, Ckdf, ConstTimeEq, Des, Hkdf, Hmac, MonotonicClock, Rng,
+    aes, des, hmac, Aes, AesCmac, Ckdf, ConstTimeEq, Des, Hkdf, Hmac, MonotonicClock, Rng, Sha256,
     SymmetricOperation,
 };
 use kmr_common::{keyblob, keyblob::SlotPurpose};
@@ -520,6 +520,28 @@ pub fn test_des<D: Des>(des: D) {
     }
 }
 
+/// Test basic SHA-256 functionality.
+pub fn test_sha256<S: Sha256>(sha256: S) {
+    struct TestCase {
+        msg: &'static [u8],
+        want: &'static str,
+    }
+    let tests = vec![
+        TestCase {
+            msg: b"",
+            want: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+        TestCase {
+            msg: b"abc",
+            want: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        },
+    ];
+    for test in tests {
+        let got = sha256.hash(test.msg).unwrap();
+        assert_eq!(hex::encode(got), test.want, "for input {}", hex::encode(test.msg));
+    }
+}
+
 /// Test secure deletion secret management.
 ///
 /// Warning: this test will use slots in the provided manager, and may leak slots on failure.
@@ -565,8 +587,8 @@ pub fn test_signing_cert_parse<T: kmr_ta::device::RetrieveCertSigningInfo>(
                 let cert = x509_cert::Certificate::from_der(&cert.encoded_certificate)
                     .expect("failed to parse cert");
 
-                let subject_data = cert.tbs_certificate.subject.to_vec().unwrap();
-                let issuer_data = cert.tbs_certificate.issuer.to_vec().unwrap();
+                let subject_data = cert.tbs_certificate.subject.to_der().unwrap();
+                let issuer_data = cert.tbs_certificate.issuer.to_der().unwrap();
                 if idx == 0 {
                     // First cert should be self-signed, and so have subject==issuer.
                     assert_eq!(
