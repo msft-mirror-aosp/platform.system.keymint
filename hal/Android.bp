@@ -19,10 +19,7 @@ package {
 rust_defaults {
     name: "kmr_hal_defaults",
     edition: "2021",
-    lints: "vendor",
-    defaults: [
-        "keymint_use_latest_hal_aidl_rust",
-    ],
+    lints: "android",
     rustlibs: [
         "android.hardware.security.rkp-V3-rust",
         "android.hardware.security.secureclock-V1-rust",
@@ -31,7 +28,6 @@ rust_defaults {
         "libciborium",
         "libciborium_io",
         "libhex",
-        "libkmr_wire",
         "liblog_rust",
         "libregex",
         "librustutils",
@@ -46,8 +42,48 @@ rust_library {
     crate_name: "kmr_hal",
     srcs: ["src/lib.rs"],
     vendor_available: true,
+    // Default target includes support for all versions of the KeyMint HAL.
+    features: [
+        "hal_v2",
+        "hal_v3",
+    ],
+    defaults: [
+        "keymint_use_latest_hal_aidl_rust",
+        "kmr_hal_defaults",
+    ],
+    rustlibs: [
+        "libkmr_wire",
+    ],
+}
+
+rust_library {
+    name: "libkmr_hal_v2",
+    crate_name: "kmr_hal",
+    srcs: ["src/lib.rs"],
+    vendor_available: true,
+    features: [
+        "hal_v2",
+    ],
     defaults: [
         "kmr_hal_defaults",
+    ],
+    rustlibs: [
+        "android.hardware.security.keymint-V2-rust",
+        "libkmr_wire_hal_v2",
+    ],
+}
+
+rust_library {
+    name: "libkmr_hal_v1",
+    crate_name: "kmr_hal",
+    srcs: ["src/lib.rs"],
+    vendor_available: true,
+    defaults: [
+        "kmr_hal_defaults",
+    ],
+    rustlibs: [
+        "android.hardware.security.keymint-V1-rust",
+        "libkmr_wire_hal_v1",
     ],
 }
 
@@ -55,8 +91,16 @@ rust_test {
     name: "libkmr_hal_test",
     crate_name: "libkeymint_rust_test",
     srcs: ["src/lib.rs"],
+    features: [
+        "hal_v2",
+        "hal_v3",
+    ],
     defaults: [
+        "keymint_use_latest_hal_aidl_rust",
         "kmr_hal_defaults",
+    ],
+    rustlibs: [
+        "libkmr_wire",
     ],
     test_suites: ["general-tests"],
 }

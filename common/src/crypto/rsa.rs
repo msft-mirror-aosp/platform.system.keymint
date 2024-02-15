@@ -1,12 +1,26 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Functionality related to RSA.
 
 use super::{KeyMaterial, KeySizeInBits, OpaqueOr, RsaExponent};
-use crate::{km_err, tag, try_to_vec, Error, FallibleAllocExt};
+use crate::{der_err, km_err, tag, try_to_vec, Error, FallibleAllocExt};
 use alloc::vec::Vec;
-use der::{Decode, Encode};
+use der::{asn1::BitStringRef, Decode, Encode};
 use kmr_wire::keymint::{Digest, KeyParam, PaddingMode};
 use pkcs1::RsaPrivateKey;
-use spki::{AlgorithmIdentifier, SubjectPublicKeyInfo};
+use spki::{AlgorithmIdentifier, SubjectPublicKeyInfo, SubjectPublicKeyInfoRef};
 use zeroize::ZeroizeOnDrop;
 
 /// Overhead for PKCS#1 v1.5 signature padding of undigested messages.  Digested messages have
@@ -58,10 +72,14 @@ impl Key {
     ///        publicExponent     INTEGER  }  -- e
     ///     ```
     pub fn subject_public_key(&self) -> Result<Vec<u8>, Error> {
-        let rsa_pvt_key = RsaPrivateKey::from_der(self.0.as_slice())?;
+        let rsa_pvt_key = RsaPrivateKey::from_der(self.0.as_slice())
+            .map_err(|e| der_err!(e, "failed to parse RsaPrivateKey"))?;
+
         let rsa_pub_key = rsa_pvt_key.public_key();
         let mut encoded_data = Vec::<u8>::new();
-        rsa_pub_key.encode_to_vec(&mut encoded_data)?;
+        rsa_pub_key
+            .encode_to_vec(&mut encoded_data)
+            .map_err(|e| der_err!(e, "failed to encode RSA PublicKey"))?;
         Ok(encoded_data)
     }
 
@@ -107,12 +125,12 @@ impl OpaqueOr<Key> {
         &'a self,
         buf: &'a mut Vec<u8>,
         rsa: &dyn super::Rsa,
-    ) -> Result<SubjectPublicKeyInfo<'a>, Error> {
+    ) -> Result<SubjectPublicKeyInfoRef<'a>, Error> {
         let pub_key = rsa.subject_public_key(self)?;
         buf.try_extend_from_slice(&pub_key)?;
         Ok(SubjectPublicKeyInfo {
             algorithm: AlgorithmIdentifier { oid: X509_OID, parameters: Some(der::AnyRef::NULL) },
-            subject_public_key: buf,
+            subject_public_key: BitStringRef::from_bytes(buf).unwrap(),
         })
     }
 }
@@ -120,8 +138,16 @@ impl OpaqueOr<Key> {
 /// RSA decryption mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecryptionMode {
+    /// No padding.
     NoPadding,
-    OaepPadding { msg_digest: Digest, mgf_digest: Digest },
+    /// RSA-OAEP padding.
+    OaepPadding {
+        /// Digest to use for the message
+        msg_digest: Digest,
+        /// Digest to use in the MGF1 function.
+        mgf_digest: Digest,
+    },
+    /// PKCS#1 v1.5 padding.
     Pkcs1_1_5Padding,
 }
 
@@ -149,8 +175,11 @@ impl DecryptionMode {
 /// RSA signature mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignMode {
+    /// No padding.
     NoPadding,
+    /// RSA-PSS signature scheme using the given digest.
     PssPadding(Digest),
+    /// PKCS#1 v1.5 padding using the given digest.
     Pkcs1_1_5Padding(Digest),
 }
 

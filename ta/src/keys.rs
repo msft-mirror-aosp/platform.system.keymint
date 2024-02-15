@@ -1,24 +1,39 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! TA functionality related to key generation/import/upgrade.
 
 use crate::{cert, device, AttestationChainInfo};
 use alloc::collections::btree_map::Entry;
 use alloc::vec::Vec;
 use core::{borrow::Borrow, cmp::Ordering, convert::TryFrom};
-use der::{Decode, Sequence};
+use der::{referenced::RefToOwned, Decode, Sequence};
 use kmr_common::{
     crypto::{self, aes, rsa, KeyMaterial, OpaqueOr},
-    get_bool_tag_value, get_opt_tag_value, get_tag_value, keyblob, km_err, tag, try_to_vec,
-    vec_try_with_capacity, Error, FallibleAllocExt,
+    der_err, get_bool_tag_value, get_opt_tag_value, get_tag_value, keyblob, km_err, tag,
+    try_to_vec, vec_try_with_capacity, Error, FallibleAllocExt,
 };
 use kmr_wire::{
     keymint::{
         AttestationKey, Digest, EcCurve, ErrorCode, HardwareAuthenticatorType, KeyCharacteristics,
         KeyCreationResult, KeyFormat, KeyOrigin, KeyParam, KeyPurpose, SecurityLevel,
+        UNDEFINED_NOT_AFTER, UNDEFINED_NOT_BEFORE,
     },
     *,
 };
 use log::{error, warn};
-use spki::SubjectPublicKeyInfo;
+use spki::SubjectPublicKeyInfoOwned;
 use x509_cert::ext::pkix::KeyUsages;
 
 /// Maximum size of an attestation challenge value.
@@ -84,12 +99,12 @@ pub(crate) struct SigningInfo<'a> {
     pub chain: Vec<keymint::Certificate>,
 }
 
-impl<'a> crate::KeyMintTa<'a> {
+impl crate::KeyMintTa {
     /// Retrieve the signing information.
     pub(crate) fn get_signing_info(
         &self,
         key_type: device::SigningKeyType,
-    ) -> Result<SigningInfo<'a>, Error> {
+    ) -> Result<SigningInfo, Error> {
         // Retrieve the chain and issuer information, which is cached after first retrieval.
         let mut attestation_chain_info = self.attestation_chain_info.borrow_mut();
         let chain_info = match attestation_chain_info.entry(key_type) {
@@ -97,9 +112,10 @@ impl<'a> crate::KeyMintTa<'a> {
             Entry::Vacant(e) => {
                 // Retrieve and store the cert chain information (as this is public).
                 let chain = self.dev.sign_info.cert_chain(key_type)?;
-                let issuer = cert::extract_subject(
-                    chain.get(0).ok_or_else(|| km_err!(UnknownError, "empty attestation chain"))?,
-                )?;
+                let issuer =
+                    cert::extract_subject(chain.first().ok_or_else(|| {
+                        km_err!(KeymintNotConfigured, "empty attestation chain")
+                    })?)?;
                 e.insert(AttestationChainInfo { chain, issuer })
             }
         };
@@ -118,20 +134,23 @@ impl<'a> crate::KeyMintTa<'a> {
     pub(crate) fn generate_cert(
         &self,
         info: Option<SigningInfo>,
-        spki: SubjectPublicKeyInfo,
+        spki: SubjectPublicKeyInfoOwned,
         params: &[KeyParam],
         chars: &[KeyCharacteristics],
     ) -> Result<keymint::Certificate, Error> {
         // Build and encode key usage extension value
         let key_usage_ext_bits = cert::key_usage_extension_bits(params);
-        let key_usage_ext_val = cert::asn1_der_encode(&key_usage_ext_bits)?;
+        let key_usage_ext_val = cert::asn1_der_encode(&key_usage_ext_bits)
+            .map_err(|e| der_err!(e, "failed to encode KeyUsage {:?}", key_usage_ext_bits))?;
 
         // Build and encode basic constraints extension value, based on the key usage extension
         // value
         let basic_constraints_ext_val =
             if (key_usage_ext_bits.0 & KeyUsages::KeyCertSign).bits().count_ones() != 0 {
                 let basic_constraints = cert::basic_constraints_ext_value(true);
-                Some(cert::asn1_der_encode(&basic_constraints)?)
+                Some(cert::asn1_der_encode(&basic_constraints).map_err(|e| {
+                    der_err!(e, "failed to encode basic constraints {:?}", basic_constraints)
+                })?)
             } else {
                 None
             };
@@ -141,7 +160,9 @@ impl<'a> crate::KeyMintTa<'a> {
         let attest_ext_val =
             if let Some(SigningInfo { attestation_info: Some((challenge, app_id)), .. }) = &info {
                 let unique_id = self.calculate_unique_id(app_id, params)?;
+                let boot_info = self.boot_info_hashed_key()?;
                 let attest_ext = cert::attestation_extension(
+                    self.aidl_version as i32,
                     challenge,
                     app_id,
                     self.hw_info.security_level,
@@ -149,11 +170,12 @@ impl<'a> crate::KeyMintTa<'a> {
                     params,
                     chars,
                     &unique_id,
-                    self.boot_info.as_ref().ok_or_else(|| {
-                        km_err!(HardwareNotYetAvailable, "root of trust info not found")
-                    })?,
+                    &boot_info,
                 )?;
-                Some(cert::asn1_der_encode(&attest_ext)?)
+                Some(
+                    cert::asn1_der_encode(&attest_ext)
+                        .map_err(|e| der_err!(e, "failed to encode attestation extension"))?,
+                )
             } else {
                 None
             };
@@ -167,7 +189,8 @@ impl<'a> crate::KeyMintTa<'a> {
             tag::characteristics_at(chars, self.hw_info.security_level)?,
             params,
         )?;
-        let tbs_data = cert::asn1_der_encode(&tbs_cert)?;
+        let tbs_data = cert::asn1_der_encode(&tbs_cert)
+            .map_err(|e| der_err!(e, "failed to encode tbsCert"))?;
         // If key does not have ATTEST_KEY or SIGN purpose, the certificate has empty signature
         let sig_data = match info.as_ref() {
             Some(info) => self.sign_cert_data(info.signing_key.clone(), tbs_data.as_slice())?,
@@ -175,7 +198,8 @@ impl<'a> crate::KeyMintTa<'a> {
         };
 
         let cert = cert::certificate(tbs_cert, &sig_data)?;
-        let cert_data = cert::asn1_der_encode(&cert)?;
+        let cert_data = cert::asn1_der_encode(&cert)
+            .map_err(|e| der_err!(e, "failed to encode certificate"))?;
         Ok(keymint::Certificate { encoded_certificate: cert_data })
     }
 
@@ -201,7 +225,7 @@ impl<'a> crate::KeyMintTa<'a> {
                 op.update(tbs_data)?;
                 op.finish()
             }
-            _ => Err(km_err!(UnknownError, "unexpected cert signing key type")),
+            _ => Err(km_err!(IncompatibleAlgorithm, "unexpected cert signing key type")),
         }
     }
 
@@ -220,7 +244,7 @@ impl<'a> crate::KeyMintTa<'a> {
         combined_input.extend_from_slice(app_id);
         combined_input.push(u8::from(get_bool_tag_value!(params, ResetSinceIdRotation)?));
 
-        let hbk = self.dev.keys.unique_id_hbk(self.imp.ckdf)?;
+        let hbk = self.dev.keys.unique_id_hbk(&*self.imp.ckdf)?;
 
         let mut hmac_op = self.imp.hmac.begin(hbk.into(), Digest::Sha256)?;
         hmac_op.update(&combined_input)?;
@@ -340,8 +364,8 @@ impl<'a> crate::KeyMintTa<'a> {
         let mut certificate_chain = Vec::new();
         if let Some(spki) = keyblob.key_material.subject_public_key_info(
             &mut Vec::<u8>::new(),
-            self.imp.ec,
-            self.imp.rsa,
+            &*self.imp.ec,
+            &*self.imp.rsa,
         )? {
             // Asymmetric keys return the public key inside an X.509 certificate.
             // Need to determine:
@@ -442,7 +466,8 @@ impl<'a> crate::KeyMintTa<'a> {
             };
 
             // Build the X.509 leaf certificate.
-            let leaf_cert = self.generate_cert(signing_info.clone(), spki, params, &chars)?;
+            let leaf_cert =
+                self.generate_cert(signing_info.clone(), spki.ref_to_owned(), params, &chars)?;
             certificate_chain.try_push(leaf_cert)?;
 
             // Append the rest of the chain.
@@ -461,10 +486,10 @@ impl<'a> crate::KeyMintTa<'a> {
             self.hw_info.security_level,
             match &mut self.dev.sdd_mgr {
                 None => None,
-                Some(mr) => Some(*mr),
+                Some(mr) => Some(&mut **mr),
             },
-            self.imp.aes,
-            self.imp.hkdf,
+            &*self.imp.aes,
+            &*self.imp.hkdf,
             &mut *self.imp.rng,
             &root_kek,
             &kek_context,
@@ -495,13 +520,15 @@ impl<'a> crate::KeyMintTa<'a> {
         let keyblob::PlaintextKeyBlob { characteristics, key_material } = wrapping_key;
 
         // Decode the ASN.1 DER encoded `SecureKeyWrapper`.
-        let mut secure_key_wrapper = SecureKeyWrapper::from_der(wrapped_key_data)?;
+        let mut secure_key_wrapper = SecureKeyWrapper::from_der(wrapped_key_data)
+            .map_err(|e| der_err!(e, "failed to parse SecureKeyWrapper"))?;
 
         if secure_key_wrapper.version != SECURE_KEY_WRAPPER_VERSION {
             return Err(km_err!(InvalidArgument, "invalid version in Secure Key Wrapper."));
         }
 
-        // Decrypt the masked transport key.
+        // Decrypt the masked transport key, using an RSA key. (Only RSA wrapping keys are supported
+        // by the spec, as RSA is the only algorithm supporting asymmetric decryption.)
         let masked_transport_key = match key_material {
             KeyMaterial::Rsa(key) => {
                 // Check the requirements on the wrapping key characterisitcs
@@ -515,7 +542,6 @@ impl<'a> crate::KeyMintTa<'a> {
                 crypto_op.as_mut().update(secure_key_wrapper.encrypted_transport_key)?;
                 crypto_op.finish()?
             }
-            // TODO: For now, we consider wrapping keys to be RSA keys only.
             _ => {
                 return Err(km_err!(InvalidArgument, "invalid key algorithm for transport key"));
             }
@@ -590,7 +616,10 @@ impl<'a> crate::KeyMintTa<'a> {
             gcm_mode,
             crypto::SymmetricOperation::Decrypt,
         )?;
-        op.update_aad(&cert::asn1_der_encode(&secure_key_wrapper.key_description)?)?;
+        op.update_aad(
+            &cert::asn1_der_encode(&secure_key_wrapper.key_description)
+                .map_err(|e| der_err!(e, "failed to re-encode SecureKeyWrapper"))?,
+        )?;
 
         let mut imported_key_data = op.update(secure_key_wrapper.encrypted_key)?;
         imported_key_data.try_extend_from_slice(&op.update(secure_key_wrapper.tag)?)?;
@@ -627,6 +656,12 @@ impl<'a> crate::KeyMintTa<'a> {
                 imported_key_params.try_push(KeyParam::UserSecureId(biometric_sid as u64))?;
             }
         };
+
+        // There is no way for clients to pass CERTIFICATE_NOT_BEFORE and CERTIFICATE_NOT_AFTER.
+        // importWrappedKey must use validity with no well-defined expiration date.
+        imported_key_params.try_push(KeyParam::CertificateNotBefore(UNDEFINED_NOT_BEFORE))?;
+        imported_key_params.try_push(KeyParam::CertificateNotAfter(UNDEFINED_NOT_AFTER))?;
+
         self.import_key(
             imported_key_params,
             KeyFormat::try_from(secure_key_wrapper.key_description.key_format).map_err(|_e| {
@@ -654,11 +689,10 @@ impl<'a> crate::KeyMintTa<'a> {
                     // Because `keyblob_parse_decrypt_backlevel` explicitly allows back-level
                     // versioned keys, a `KeyRequiresUpgrade` error indicates that the keyblob looks
                     // to be in legacy format.  Try to convert it.
-                    let legacy_handler = self
-                        .dev
-                        .legacy_key
-                        .as_mut()
-                        .ok_or_else(|| km_err!(UnknownError, "no legacy key handler"))?;
+                    let legacy_handler =
+                        self.dev.legacy_key.as_mut().ok_or_else(|| {
+                            km_err!(KeymintNotConfigured, "no legacy key handler")
+                        })?;
                     (
                         legacy_handler.convert_legacy_key(
                             keyblob_to_upgrade,
@@ -757,10 +791,10 @@ impl<'a> crate::KeyMintTa<'a> {
             self.hw_info.security_level,
             match &mut self.dev.sdd_mgr {
                 None => None,
-                Some(mr) => Some(*mr),
+                Some(mr) => Some(&mut **mr),
             },
-            self.imp.aes,
-            self.imp.hkdf,
+            &*self.imp.aes,
+            &*self.imp.hkdf,
             &mut *self.imp.rng,
             &root_kek,
             &kek_context,

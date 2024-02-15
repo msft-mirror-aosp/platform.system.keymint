@@ -1,11 +1,25 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Functionality related to elliptic curve support.
 
 use super::{CurveType, KeyMaterial, OpaqueOr};
-use crate::{km_err, try_to_vec, Error, FallibleAllocExt};
+use crate::{der_err, km_err, try_to_vec, vec_try, Error, FallibleAllocExt};
 use alloc::vec::Vec;
-use der::{AnyRef, Decode};
+use der::{asn1::BitStringRef, AnyRef, Decode, Encode, Sequence};
 use kmr_wire::{coset, keymint::EcCurve, rpc, KeySizeInBits};
-use spki::{AlgorithmIdentifier, SubjectPublicKeyInfo};
+use spki::{AlgorithmIdentifier, SubjectPublicKeyInfo, SubjectPublicKeyInfoRef};
 use zeroize::ZeroizeOnDrop;
 
 /// Size (in bytes) of a curve 25519 private key.
@@ -56,14 +70,18 @@ pub const ALGO_PARAM_P521_OID: pkcs8::ObjectIdentifier =
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(i32)]
 pub enum NistCurve {
+    /// P-224
     P224 = 0,
+    /// P-256
     P256 = 1,
+    /// P-384
     P384 = 2,
+    /// P-521
     P521 = 3,
 }
 
 impl NistCurve {
-    // Curve coordinate size in bytes.
+    /// Curve coordinate size in bytes.
     pub fn coord_len(&self) -> usize {
         match self {
             NistCurve::P224 => 28,
@@ -145,7 +163,7 @@ impl OpaqueOr<Key> {
         ec: &dyn super::Ec,
         curve: &EcCurve,
         curve_type: &CurveType,
-    ) -> Result<SubjectPublicKeyInfo<'a>, Error> {
+    ) -> Result<SubjectPublicKeyInfoRef<'a>, Error> {
         buf.try_extend_from_slice(&ec.subject_public_key(self)?)?;
         let (oid, parameters) = match curve_type {
             CurveType::Nist => {
@@ -163,10 +181,11 @@ impl OpaqueOr<Key> {
         };
         Ok(SubjectPublicKeyInfo {
             algorithm: AlgorithmIdentifier { oid, parameters },
-            subject_public_key: buf,
+            subject_public_key: BitStringRef::from_bytes(buf).unwrap(),
         })
     }
 
+    /// Generate a `COSE_Key` for the public key.
     pub fn public_cose_key(
         &self,
         ec: &dyn super::Ec,
@@ -233,17 +252,25 @@ impl OpaqueOr<Key> {
 /// Elliptic curve private key material.
 #[derive(Clone, PartialEq, Eq)]
 pub enum Key {
+    /// P-224 private key.
     P224(NistKey),
+    /// P-256 private key.
     P256(NistKey),
+    /// P-384 private key.
     P384(NistKey),
+    /// P-521 private key.
     P521(NistKey),
+    /// Ed25519 private key.
     Ed25519(Ed25519Key),
+    /// X25519 private key.
     X25519(X25519Key),
 }
 
 /// Indication of the purpose for a COSE key.
 pub enum CoseKeyPurpose {
+    /// ECDH key agreement.
     Agree,
+    /// ECDSA signature generation.
     Sign,
 }
 
@@ -296,8 +323,8 @@ impl Key {
 #[derive(Clone, PartialEq, Eq, ZeroizeOnDrop)]
 pub struct NistKey(pub Vec<u8>);
 
-// Helper function to return the (x,y) coordinates, given the public key as a SEC-1 encoded
-// uncompressed point. 0x04: uncompressed, followed by x || y coordinates.
+/// Helper function to return the (x,y) coordinates, given the public key as a SEC-1 encoded
+/// uncompressed point. 0x04: uncompressed, followed by x || y coordinates.
 pub fn coordinates_from_pub_key(
     pub_key: Vec<u8>,
     curve: NistCurve,
@@ -305,7 +332,7 @@ pub fn coordinates_from_pub_key(
     let coord_len = curve.coord_len();
     if pub_key.len() != (1 + 2 * coord_len) {
         return Err(km_err!(
-            UnknownError,
+            UnsupportedKeySize,
             "unexpected SEC1 pubkey len of {} for {:?}",
             pub_key.len(),
             curve
@@ -313,7 +340,7 @@ pub fn coordinates_from_pub_key(
     }
     if pub_key[0] != SEC1_UNCOMPRESSED_PREFIX {
         return Err(km_err!(
-            UnknownError,
+            UnsupportedKeySize,
             "unexpected SEC1 pubkey initial byte {} for {:?}",
             pub_key[0],
             curve
@@ -351,15 +378,17 @@ pub fn curve_to_key_size(curve: EcCurve) -> KeySizeInBits {
 
 /// Import an NIST EC key in SEC1 ECPrivateKey format.
 pub fn import_sec1_private_key(data: &[u8]) -> Result<KeyMaterial, Error> {
-    let ec_key = sec1::EcPrivateKey::from_der(data)?;
-    let ec_parameters = ec_key.parameters.ok_or(km_err!(
-        InvalidArgument,
-        "sec1 formatted EC private key didn't have a parameters field"
-    ))?;
-    let parameters_oid = ec_parameters.named_curve().ok_or(km_err!(
-        InvalidArgument,
-        "couldn't retrieve parameters oid from sec1 ECPrivateKey formatted ec key parameters"
-    ))?;
+    let ec_key = sec1::EcPrivateKey::from_der(data)
+        .map_err(|e| der_err!(e, "failed to parse ECPrivateKey"))?;
+    let ec_parameters = ec_key.parameters.ok_or_else(|| {
+        km_err!(InvalidArgument, "sec1 formatted EC private key didn't have a parameters field")
+    })?;
+    let parameters_oid = ec_parameters.named_curve().ok_or_else(|| {
+        km_err!(
+            InvalidArgument,
+            "couldn't retrieve parameters oid from sec1 ECPrivateKey formatted ec key parameters"
+        )
+    })?;
     let algorithm =
         AlgorithmIdentifier { oid: X509_NIST_OID, parameters: Some(AnyRef::from(&parameters_oid)) };
     let pkcs8_key = pkcs8::PrivateKeyInfo::new(algorithm, data);
@@ -386,7 +415,7 @@ fn import_pkcs8_key_impl(key_info: &pkcs8::PrivateKeyInfo) -> Result<KeyMaterial
                 )
             })?;
             let curve_oid = algo_params
-                .oid()
+                .decode_as()
                 .map_err(|_e| km_err!(InvalidArgument, "imported key has no OID parameter"))?;
             let (curve, key) = match curve_oid {
                 ALGO_PARAM_P224_OID => {
@@ -465,4 +494,146 @@ pub fn import_raw_x25519_key(data: &[u8]) -> Result<KeyMaterial, Error> {
         km_err!(InvalidInputLength, "import X25519 key of incorrect len {}", data.len())
     })?;
     Ok(KeyMaterial::Ec(EcCurve::Curve25519, CurveType::Xdh, Key::X25519(X25519Key(key)).into()))
+}
+
+/// Convert a signature as emitted from the `Ec` trait into the form needed for
+/// a `COSE_Sign1`.
+pub fn to_cose_signature(curve: EcCurve, sig: Vec<u8>) -> Result<Vec<u8>, Error> {
+    match curve {
+        EcCurve::P224 | EcCurve::P256 | EcCurve::P384 | EcCurve::P521 => {
+            // NIST curve signatures are emitted as a DER-encoded `SEQUENCE`.
+            let der_sig = NistSignature::from_der(&sig)
+                .map_err(|e| km_err!(EncodingError, "failed to parse DER signature: {:?}", e))?;
+            // COSE expects signature of (r||s) with each value left-padded with zeros to coordinate
+            // size.
+            let nist_curve = NistCurve::try_from(curve)?;
+            let l = nist_curve.coord_len();
+            let mut sig = vec_try![0; 2 * l]?;
+            let r = der_sig.r.as_bytes();
+            let s = der_sig.s.as_bytes();
+            let r_offset = l - r.len();
+            let s_offset = l + l - s.len();
+            sig[r_offset..r_offset + r.len()].copy_from_slice(r);
+            sig[s_offset..s_offset + s.len()].copy_from_slice(s);
+            Ok(sig)
+        }
+        EcCurve::Curve25519 => {
+            // Ed25519 signatures can be used as-is (RFC 8410 section 6)
+            Ok(sig)
+        }
+    }
+}
+
+/// Convert a signature as used in a `COSE_Sign1` into the form needed for the `Ec` trait.
+pub fn from_cose_signature(curve: EcCurve, sig: &[u8]) -> Result<Vec<u8>, Error> {
+    match curve {
+        EcCurve::P224 | EcCurve::P256 | EcCurve::P384 | EcCurve::P521 => {
+            // COSE signatures are (r||s) with each value left-padded with zeros to coordinate size.
+            let nist_curve = NistCurve::try_from(curve)?;
+            let l = nist_curve.coord_len();
+            if sig.len() != 2 * l {
+                return Err(km_err!(
+                    EncodingError,
+                    "unexpected len {} for {:?} COSE signature value",
+                    sig.len(),
+                    nist_curve
+                ));
+            }
+
+            // NIST curve signatures need to be emitted as a DER-encoded `SEQUENCE`.
+            let der_sig = NistSignature {
+                r: der::asn1::UintRef::new(&sig[..l])
+                    .map_err(|e| km_err!(EncodingError, "failed to build INTEGER: {:?}", e))?,
+                s: der::asn1::UintRef::new(&sig[l..])
+                    .map_err(|e| km_err!(EncodingError, "failed to build INTEGER: {:?}", e))?,
+            };
+            der_sig
+                .to_der()
+                .map_err(|e| km_err!(EncodingError, "failed to encode signature SEQUENCE: {:?}", e))
+        }
+        EcCurve::Curve25519 => {
+            // Ed25519 signatures can be used as-is (RFC 8410 section 6)
+            try_to_vec(sig)
+        }
+    }
+}
+
+/// DER-encoded signature from a NIST curve (RFC 3279 section 2.2.3):
+/// ```asn1
+/// Ecdsa-Sig-Value  ::=  SEQUENCE  {
+///      r     INTEGER,
+///      s     INTEGER
+/// }
+/// ```
+#[derive(Sequence)]
+struct NistSignature<'a> {
+    r: der::asn1::UintRef<'a>,
+    s: der::asn1::UintRef<'a>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_sig_decode() {
+        let sig_data = hex::decode("3045022001b309d5eeffa5d550bde27630f9fc7f08492e4617bc158da08b913414cf675b022100fcdca2e77d036c33fa78f4a892b98569358d83c047a7d8a74ce6fe12fbf919c6").unwrap();
+        let sig = NistSignature::from_der(&sig_data).expect("sequence should decode");
+        assert_eq!(
+            hex::encode(sig.r.as_bytes()),
+            "01b309d5eeffa5d550bde27630f9fc7f08492e4617bc158da08b913414cf675b"
+        );
+        assert_eq!(
+            hex::encode(sig.s.as_bytes()),
+            "fcdca2e77d036c33fa78f4a892b98569358d83c047a7d8a74ce6fe12fbf919c6"
+        );
+    }
+
+    #[test]
+    fn test_longer_sig_transmute() {
+        let nist_sig_data = hex::decode(concat!(
+            "30", // SEQUENCE
+            "45", // len
+            "02", // INTEGER
+            "20", // len = 32
+            "01b309d5eeffa5d550bde27630f9fc7f08492e4617bc158da08b913414cf675b",
+            "02", // INTEGER
+            "21", // len = 33 (high bit set so leading zero needed)
+            "00fcdca2e77d036c33fa78f4a892b98569358d83c047a7d8a74ce6fe12fbf919c6"
+        ))
+        .unwrap();
+        let cose_sig_data = to_cose_signature(EcCurve::P256, nist_sig_data.clone()).unwrap();
+        assert_eq!(
+            concat!(
+                "01b309d5eeffa5d550bde27630f9fc7f08492e4617bc158da08b913414cf675b",
+                "fcdca2e77d036c33fa78f4a892b98569358d83c047a7d8a74ce6fe12fbf919c6"
+            ),
+            hex::encode(&cose_sig_data),
+        );
+        let got_nist_sig = from_cose_signature(EcCurve::P256, &cose_sig_data).unwrap();
+        assert_eq!(got_nist_sig, nist_sig_data);
+    }
+    #[test]
+    fn test_short_sig_transmute() {
+        let nist_sig_data = hex::decode(concat!(
+            "30", // SEQUENCE
+            "43", // len x44
+            "02", // INTEGER
+            "1e", // len = 30
+            "09d5eeffa5d550bde27630f9fc7f08492e4617bc158da08b913414cf675b",
+            "02", // INTEGER
+            "21", // len = 33 (high bit set so leading zero needed)
+            "00fcdca2e77d036c33fa78f4a892b98569358d83c047a7d8a74ce6fe12fbf919c6"
+        ))
+        .unwrap();
+        let cose_sig_data = to_cose_signature(EcCurve::P256, nist_sig_data.clone()).unwrap();
+        assert_eq!(
+            concat!(
+                "000009d5eeffa5d550bde27630f9fc7f08492e4617bc158da08b913414cf675b",
+                "fcdca2e77d036c33fa78f4a892b98569358d83c047a7d8a74ce6fe12fbf919c6"
+            ),
+            hex::encode(&cose_sig_data),
+        );
+        let got_nist_sig = from_cose_signature(EcCurve::P256, &cose_sig_data).unwrap();
+        assert_eq!(got_nist_sig, nist_sig_data);
+    }
 }

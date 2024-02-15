@@ -19,9 +19,9 @@ package {
 rust_defaults {
     name: "libkmr_crypto_boring_defaults",
     edition: "2021",
-    lints: "vendor",
+    lints: "android",
     rustlibs: [
-        "libbssl_ffi",
+        "libbssl_sys",
         "libforeign_types",
         "liblibc",
         "liblog_rust",
@@ -46,15 +46,14 @@ rust_library_host {
     ],
 }
 
-// TODO(b/204562227): Rust host unit tests work locally but fail in CI.
-//rust_test_host {
-//    name: "libkmr_crypto_boring_test",
-//    srcs: ["src/lib.rs"],
-//    rustlibs: [
-//        "libkmr_tests",
-//    ],
-//    defaults: [
-//        "libkmr_crypto_boring_defaults",
-//    ],
-//    test_suites: ["general-tests"],
-//}
+rust_test_host {
+    name: "libkmr_crypto_boring_test",
+    srcs: ["src/lib.rs"],
+    rustlibs: [
+        "libkmr_tests",
+    ],
+    defaults: [
+        "libkmr_crypto_boring_defaults",
+    ],
+    test_suites: ["general-tests"],
+}

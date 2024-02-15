@@ -1,3 +1,17 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Tests
 
 use crate::{error_rsp, invalid_cbor_rsp_data, keys::SecureKeyWrapper, split_rsp};
@@ -195,7 +209,7 @@ fn test_key_description_encode_decode() {
     let encoded_bytes = hex::decode(encoded_secure_key_wrapper).unwrap();
     let secure_key_wrapper = SecureKeyWrapper::from_der(&encoded_bytes).unwrap();
     let key_description = secure_key_wrapper.key_description;
-    let encoded_key_description_got = key_description.to_vec().unwrap();
+    let encoded_key_description_got = key_description.to_der().unwrap();
     assert_eq!(hex::encode(encoded_key_description_got), encoded_key_description_want);
 }
 
@@ -218,7 +232,7 @@ fn test_split_rsp_smaller_input() {
     let rsp = vec![0x82, 0x13, 0x82, 0x80, 0x80];
     let result = split_rsp(&rsp, 20).expect("result should not be error");
     assert_eq!(result.len(), 1);
-    let inner_msg = result.get(0).expect("single message is expected").as_slice();
+    let inner_msg = result.first().expect("single message is expected").as_slice();
     assert_eq!(inner_msg.len(), 6);
     let marker = inner_msg[0];
     assert_eq!(marker, NEXT_MESSAGE_SIGNAL_FALSE);
@@ -232,7 +246,7 @@ fn test_split_rsp_allowed_size_input() {
     let rsp = vec![0x82, 0x13, 0x82, 0x80, 0x80];
     let result = split_rsp(&rsp, 6).expect("result should not be error");
     assert_eq!(result.len(), 1);
-    let inner_msg = result.get(0).expect("single message is expected").as_slice();
+    let inner_msg = result.first().expect("single message is expected").as_slice();
     assert_eq!(inner_msg.len(), 6);
     let marker = inner_msg[0];
     assert_eq!(marker, NEXT_MESSAGE_SIGNAL_FALSE);
@@ -247,7 +261,7 @@ fn test_split_rsp_max_size_input() {
     let result = split_rsp(&rsp, 6).expect("result should not be error");
     assert_eq!(result.len(), 2);
 
-    let inner_msg1 = result.get(0).expect("a message is expected at index 0").as_slice();
+    let inner_msg1 = result.first().expect("a message is expected at index 0").as_slice();
     assert_eq!(inner_msg1.len(), 6);
     let marker1 = inner_msg1[0];
     assert_eq!(marker1, NEXT_MESSAGE_SIGNAL_TRUE);
@@ -273,7 +287,7 @@ fn test_split_rsp_larger_input_perfect_split() {
     let result = split_rsp(&rsp, 6).expect("result should not be error");
     assert_eq!(result.len(), 3);
 
-    let inner_msg1 = result.get(0).expect("a message is expected at index 0").as_slice();
+    let inner_msg1 = result.first().expect("a message is expected at index 0").as_slice();
     assert_eq!(inner_msg1.len(), 6);
     let marker1 = inner_msg1[0];
     assert_eq!(marker1, NEXT_MESSAGE_SIGNAL_TRUE);
@@ -308,7 +322,7 @@ fn test_split_rsp_larger_input_imperfect_split() {
     let result = split_rsp(&rsp, 6).expect("result should not be error");
     assert_eq!(result.len(), 3);
 
-    let inner_msg1 = result.get(0).expect("a message is expected at index 0").as_slice();
+    let inner_msg1 = result.first().expect("a message is expected at index 0").as_slice();
     assert_eq!(inner_msg1.len(), 6);
     let marker1 = inner_msg1[0];
     assert_eq!(marker1, NEXT_MESSAGE_SIGNAL_TRUE);

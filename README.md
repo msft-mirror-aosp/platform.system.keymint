@@ -5,7 +5,7 @@ This repository holds a reference implementation of the Android
 HAL](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/keymint/aidl/android/hardware/security/keymint/IKeyMintDevice.aidl?q=IKeyMintDevice.aidl),
 including closely related HAL interfaces:
 
-- [`IRemotelyProvisionedComponent`](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/keymint/aidl/android/hardware/security/keymint/IRemotelyProvisionedComponent.aidl)
+- [`IRemotelyProvisionedComponent`](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/rkp/aidl/android/hardware/security/keymint/IRemotelyProvisionedComponent.aidl)
 - [`ISharedSecret`](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/sharedsecret/aidl/android/hardware/security/sharedsecret/ISharedSecret.aidl)
 - [`ISecureClock`](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/secureclock/aidl/android/hardware/security/secureclock/ISecureClock.aidl)
 
@@ -184,3 +184,9 @@ in [`kmr_hal::device`](hal/src/device.rs).
 - [ ] Storage key wrapping integration (optional).
 - [ ] Trusted user presence indication (optional).
 - [ ] Legacy keyblob format converter (optional).
+
+## Supporting Older Versions of the KeyMint HAL
+
+The reference implementation has the ability to behave like an earlier version of the KeyMint
+HAL. To enable emulation of (say) KeyMint v1, link the HAL service against the `libkmr_hal_v1` and
+`libkmr_wire_hal_v1` targets rather than `libkmr_hal` / `libkmr_wire`.

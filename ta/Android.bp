@@ -21,7 +21,7 @@ rust_library_host {
     crate_name: "kmr_ta",
     srcs: ["src/lib.rs"],
     edition: "2021",
-    lints: "vendor",
+    lints: "android",
     vendor_available: true,
     rustlibs: [
         "libciborium",
@@ -37,6 +37,36 @@ rust_library_host {
     ],
     proc_macros: [
         "libkmr_derive",
+    ],
+}
+
+rust_library_rlib {
+    name: "libkmr_ta_nostd",
+    crate_name: "kmr_ta",
+    srcs: ["src/lib.rs"],
+    edition: "2021",
+    lints: "android",
+    vendor_available: true,
+    rustlibs: [
+        "libciborium_nostd",
+        "libciborium_io_nostd",
+        "libcoset_nostd",
+        "libder_nostd",
+        "libflagset_nostd",
+        "libkmr_common_nostd",
+        "libkmr_wire_nostd",
+        "liblog_rust_nostd",
+        "libspki_nostd",
+        "libx509_cert_nostd"
+    ],
+    proc_macros: [
+        "libkmr_derive",
+    ],
+    prefer_rlib: true,
+    no_stdlibs: true,
+    stdlibs: [
+        "libcompiler_builtins.rust_sysroot",
+        "libcore.rust_sysroot",
     ],
 }
 
