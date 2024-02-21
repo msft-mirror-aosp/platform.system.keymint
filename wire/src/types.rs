@@ -186,13 +186,6 @@ pub struct BeginResponse {
     pub ret: InternalBeginResult, // special case: no Binder ref here
 }
 #[derive(Debug, AsCborValue)]
-pub struct DeviceLockedRequest {
-    pub password_only: bool,
-    pub timestamp_token: Option<TimeStampToken>,
-}
-#[derive(Debug, AsCborValue)]
-pub struct DeviceLockedResponse {}
-#[derive(Debug, AsCborValue)]
 pub struct EarlyBootEndedRequest {}
 #[derive(Debug, AsCborValue)]
 pub struct EarlyBootEndedResponse {}
@@ -636,7 +629,7 @@ declare_req_rsp_enums! { KeyMintOperation  =>    (PerformOpReq, PerformOpRsp) {
     DeviceDeleteAllKeys = 0x18 =>                      (DeleteAllKeysRequest, DeleteAllKeysResponse),
     DeviceDestroyAttestationIds = 0x19 =>              (DestroyAttestationIdsRequest, DestroyAttestationIdsResponse),
     DeviceBegin = 0x1a =>                              (BeginRequest, BeginResponse),
-    DeviceDeviceLocked = 0x1b =>                       (DeviceLockedRequest, DeviceLockedResponse),
+    // 0x1b used to be DeviceDeviceLocked, but it was never used and consequently was removed.
     DeviceEarlyBootEnded = 0x1c =>                     (EarlyBootEndedRequest, EarlyBootEndedResponse),
     DeviceConvertStorageKeyToEphemeral = 0x1d =>       (ConvertStorageKeyToEphemeralRequest, ConvertStorageKeyToEphemeralResponse),
     DeviceGetKeyCharacteristics = 0x1e =>              (GetKeyCharacteristicsRequest, GetKeyCharacteristicsResponse),

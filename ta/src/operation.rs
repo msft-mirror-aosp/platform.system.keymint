@@ -14,7 +14,6 @@
 
 //! TA functionality related to in-progress crypto operations.
 
-use crate::LockState;
 use alloc::{boxed::Box, vec::Vec};
 use kmr_common::{
     crypto,
@@ -23,8 +22,7 @@ use kmr_common::{
     FallibleAllocExt,
 };
 use kmr_wire::{
-    keymint::{ErrorCode, HardwareAuthToken, HardwareAuthenticatorType, KeyParam, KeyPurpose},
-    secureclock,
+    keymint::{ErrorCode, HardwareAuthToken, KeyParam, KeyPurpose},
     secureclock::{TimeStampToken, Timestamp},
     InternalBeginResult,
 };
@@ -722,34 +720,7 @@ impl crate::KeyMintTa {
                 return Err(km_err!(KeyUserNotAuthenticated, "challenge mismatch"));
             }
         }
-        let auth_token = HardwareAuthenticatedToken(auth_token);
-
-        // The accompanying auth token may trigger an unlock, regardless of whether the operation
-        // succeeds.
-        self.maybe_unlock(&auth_token);
-        Ok(auth_token)
-    }
-
-    /// Update the device unlock state based on a possible hardware auth token.
-    fn maybe_unlock(&self, auth_token: &HardwareAuthenticatedToken) {
-        // This auth token may or may not indicate an unlock. It's not an error if
-        // it doesn't, though.
-        let (locked, lock_time, need_password) = match *self.device_locked.borrow() {
-            LockState::Unlocked => (false, secureclock::Timestamp { milliseconds: 0 }, false),
-            LockState::LockedSince(t) => (true, t, false),
-            LockState::PasswordLockedSince(t) => (true, t, true),
-        };
-
-        if locked
-            && auth_token.0.timestamp.milliseconds >= lock_time.milliseconds
-            && (!need_password
-                || ((auth_token.0.authenticator_type as u32)
-                    & (HardwareAuthenticatorType::Password as u32)
-                    != 0))
-        {
-            info!("auth token indicates device unlocked");
-            *self.device_locked.borrow_mut() = LockState::Unlocked;
-        }
+        Ok(HardwareAuthenticatedToken(auth_token))
     }
 
     /// Verify that an optional confirmation token matches the provided `data`.
