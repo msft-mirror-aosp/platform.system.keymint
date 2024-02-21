@@ -37,7 +37,6 @@ use kmr_wire::{
     },
     rpc,
     rpc::{EekCurve, IRPC_V2, IRPC_V3},
-    secureclock::{TimeStampToken, Timestamp},
     sharedsecret::SharedSecretParameters,
     *,
 };
@@ -156,9 +155,6 @@ pub struct KeyMintTa {
      * State that changes during operation.
      */
 
-    /// Whether the device's screen is locked.
-    device_locked: RefCell<LockState>,
-
     /// Challenge for root-of-trust transfer (StrongBox only).
     rot_challenge: [u8; 16],
 
@@ -207,18 +203,6 @@ pub fn split_rsp(mut rsp_data: &[u8], max_size: usize) -> Result<Vec<Vec<u8>>, E
     last_rsp.extend_from_slice(rsp_data);
     split_rsp.push(last_rsp);
     Ok(split_rsp)
-}
-
-/// Device lock state
-#[derive(Clone, Copy, Debug)]
-enum LockState {
-    /// Device is unlocked.
-    Unlocked,
-    /// Device has been locked since the given time.
-    LockedSince(Timestamp),
-    /// Device has been locked since the given time, and can only be unlocked with a password
-    /// (rather than a biometric).
-    PasswordLockedSince(Timestamp),
 }
 
 /// Hardware information.
@@ -324,9 +308,6 @@ impl KeyMintTa {
             imp,
             dev,
             in_early_boot: true,
-            // Note: Keystore currently doesn't trigger the `deviceLocked()` KeyMint entrypoint,
-            // so treat the device as not-locked at start-of-day.
-            device_locked: RefCell::new(LockState::Unlocked),
             device_hmac: None,
             rot_challenge: [0; 16],
             // Work around Rust limitation that `vec![None; n]` doesn't work.
@@ -838,14 +819,6 @@ impl KeyMintTa {
                     Err(e) => op_error_rsp(BeginRequest::CODE, e),
                 }
             }
-            PerformOpReq::DeviceDeviceLocked(req) => {
-                match self.device_locked(req.password_only, req.timestamp_token) {
-                    Ok(_ret) => {
-                        op_ok_rsp(PerformOpRsp::DeviceDeviceLocked(DeviceLockedResponse {}))
-                    }
-                    Err(e) => op_error_rsp(DeviceLockedRequest::CODE, e),
-                }
-            }
             PerformOpReq::DeviceEarlyBootEnded(_req) => match self.early_boot_ended() {
                 Ok(_ret) => {
                     op_ok_rsp(PerformOpRsp::DeviceEarlyBootEnded(EarlyBootEndedResponse {}))
@@ -981,38 +954,6 @@ impl KeyMintTa {
     fn early_boot_ended(&mut self) -> Result<(), Error> {
         info!("early boot ended");
         self.in_early_boot = false;
-        Ok(())
-    }
-
-    fn device_locked(
-        &mut self,
-        password_only: bool,
-        timestamp_token: Option<TimeStampToken>,
-    ) -> Result<(), Error> {
-        info!(
-            "device locked, password-required={}, timestamp={:?}",
-            password_only, timestamp_token
-        );
-
-        let now = if let Some(clock) = &self.imp.clock {
-            clock.now().into()
-        } else if let Some(token) = timestamp_token {
-            // Note that any `challenge` value in the `TimeStampToken` cannot be checked, because
-            // there is nothing to check it against.
-            let mac_input = clock::timestamp_token_mac_input(&token)?;
-            if !self.verify_device_hmac(&mac_input, &token.mac)? {
-                return Err(km_err!(InvalidArgument, "timestamp MAC not verified"));
-            }
-            token.timestamp
-        } else {
-            return Err(km_err!(InvalidArgument, "no clock and no external timestamp provided!"));
-        };
-
-        *self.device_locked.borrow_mut() = if password_only {
-            LockState::PasswordLockedSince(now)
-        } else {
-            LockState::LockedSince(now)
-        };
         Ok(())
     }
 

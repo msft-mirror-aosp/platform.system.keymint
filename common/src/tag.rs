@@ -356,10 +356,6 @@ fn extract_key_characteristics(
             chars.try_push(param.clone())?;
         } else if KEYSTORE_ENFORCED_CHARACTERISTICS.contains(&tag) {
             keystore_chars.try_push(param.clone())?;
-        } else if tag == Tag::UnlockedDeviceRequired {
-            // `UnlockedDeviceRequired` is policed by both KeyMint and Keystore, so put it in the
-            // KeyMint security level.
-            chars.try_push(param.clone())?;
         }
     }
 
