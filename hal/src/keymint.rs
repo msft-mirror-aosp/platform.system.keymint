@@ -21,6 +21,7 @@ use crate::hal::{
 };
 use crate::{ChannelHalService, SerializedChannel};
 use kmr_wire::{keymint::KeyParam, AsCborValue, *};
+use log::warn;
 use std::ffi::CString;
 use std::{
     ops::DerefMut,
@@ -228,14 +229,15 @@ impl<T: SerializedChannel> keymint::IKeyMintDevice::IKeyMintDevice for Device<T>
     }
     fn deviceLocked(
         &self,
-        passwordOnly: bool,
-        timestampToken: Option<&TimeStampToken>,
+        _passwordOnly: bool,
+        _timestampToken: Option<&TimeStampToken>,
     ) -> binder::Result<()> {
-        let _rsp: DeviceLockedResponse = self.execute(DeviceLockedRequest {
-            password_only: passwordOnly,
-            timestamp_token: timestampToken.map(|t| t.clone().innto()),
-        })?;
-        Ok(())
+        // This method is deprecated and unused, so just fail with error UNIMPLEMENTED.
+        warn!("Deprecated method devicedLocked() was called");
+        Err(binder::Status::new_service_specific_error(
+            keymint::ErrorCode::ErrorCode::UNIMPLEMENTED.0,
+            Some(&CString::new("Deprecated method deviceLocked() is not implemented").unwrap()),
+        ))
     }
     fn earlyBootEnded(&self) -> binder::Result<()> {
         let _rsp: EarlyBootEndedResponse = self.execute(EarlyBootEndedRequest {})?;

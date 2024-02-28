@@ -54,6 +54,7 @@ pub const KEYSTORE_ENFORCED_CHARACTERISTICS: &[Tag] = &[
     Tag::AllowWhileOnBody,
     Tag::CreationDatetime,
     Tag::MaxBootLevel,
+    Tag::UnlockedDeviceRequired,
 ];
 
 /// The set of characteristics that are enforced by KeyMint.
@@ -628,8 +629,6 @@ const INFO: [(Tag, Info); 60] = [
             bit_index: 27,
         },
     ),
-    // Keystore enforces unlocked-by-specific user,  KeyMint unlocked-at-all (according to
-    // deviceLocked() invocations)
     (
         Tag::UnlockedDeviceRequired,
         Info {
@@ -637,7 +636,7 @@ const INFO: [(Tag, Info); 60] = [
             tt: TagType::Bool,
             ext_asn1_type: Some("NULL"),
             user_can_specify: UserSpecifiable(true),
-            characteristic: Characteristic::BothEnforced,
+            characteristic: Characteristic::KeystoreEnforced,
             op_param: OperationParam::NotOperationParam,
             keymint_auto_adds: AutoAddedCharacteristic(false),
             lifetime: ValueLifetime::Variable,

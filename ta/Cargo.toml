@@ -15,7 +15,7 @@ kmr-derive = "*"
 kmr-wire = "*"
 log = "^0.4"
 spki = { version = "0.7.3"}
-x509-cert = "0.2.4"
+x509-cert = { version = "0.2.4", default-features = false }
 
 [dev-dependencies]
 hex = "0.4.3"

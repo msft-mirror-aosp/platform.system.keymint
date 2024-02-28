@@ -143,8 +143,7 @@ rust_fuzz {
     name: "libkmr_wire_fuzz_message",
     srcs: ["fuzz/fuzz_targets/message.rs"],
     rustlibs: ["libkmr_wire"],
-    // TODO: (b/304507701) Uncomment when resolved
-    //host_supported: true,
+    host_supported: true,
     fuzz_config: {
         cc: ["drysdale@google.com", "hasinitg@google.com"],
         componentid: 1084733,
