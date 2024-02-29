@@ -95,8 +95,6 @@ fn main() {
     show_schema::<DestroyAttestationIdsResponse>();
     show_schema::<BeginRequest>();
     show_schema::<InternalBeginResult>(); // Special case
-    show_schema::<DeviceLockedRequest>();
-    show_schema::<DeviceLockedResponse>();
     show_schema::<EarlyBootEndedRequest>();
     show_schema::<EarlyBootEndedResponse>();
     show_schema::<ConvertStorageKeyToEphemeralRequest>();
