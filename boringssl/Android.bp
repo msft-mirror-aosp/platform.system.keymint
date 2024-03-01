@@ -36,11 +36,12 @@ rust_defaults {
     ],
 }
 
-rust_library_host {
+rust_library {
     name: "libkmr_crypto_boring",
     crate_name: "kmr_crypto_boring",
     srcs: ["src/lib.rs"],
     vendor_available: true,
+    host_supported: true,
     defaults: [
         "libkmr_crypto_boring_defaults",
     ],
