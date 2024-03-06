@@ -612,6 +612,7 @@ mod tests {
         let got_nist_sig = from_cose_signature(EcCurve::P256, &cose_sig_data).unwrap();
         assert_eq!(got_nist_sig, nist_sig_data);
     }
+
     #[test]
     fn test_short_sig_transmute() {
         let nist_sig_data = hex::decode(concat!(
@@ -635,5 +636,39 @@ mod tests {
         );
         let got_nist_sig = from_cose_signature(EcCurve::P256, &cose_sig_data).unwrap();
         assert_eq!(got_nist_sig, nist_sig_data);
+    }
+
+    #[test]
+    fn test_sec1_ec_import() {
+        // Key data created with:
+        // ```
+        // openssl ecparam -name prime256v1 -genkey -noout -out private-key.pem
+        // ```
+        let key_data = hex::decode(concat!(
+            "3077",   // SEQUENCE len x77 (ECPrivateKey)
+            "020101", // INTEGER 1 = (ecPrivkeyVer1)
+            "0420",   // OCTET STRING len x20 (privateKey)
+            "a6a30ca3dc87b58763736400e7e86260",
+            "9e8311f41e6b89888c33753218168517",
+            "a00a",             // [0] len x0a (parameters)
+            "0608",             // OBJECT IDENTIFIER len 8 (NamedCurve)
+            "2a8648ce3d030107", // 1.2.840.10045.3.1.7=secp256r1
+            "a144",             // [1] len x44 (publicKey)
+            "0342",             // BIT STRING len x42
+            "00",               // no pad bits
+            "0481e4ce20d8be3dd40b940b3a3ba3e8",
+            "cf5a3f2156eceb4debb8fce83cbe4a48",
+            "bd576a03eebf77d329a438fcdc509f37",
+            "1f092cad41e2ecf9f25cd82f31500f33",
+            "8e"
+        ))
+        .unwrap();
+        let key = import_sec1_private_key(&key_data).expect("SEC1 parse failed");
+        if let KeyMaterial::Ec(curve, curve_type, _key) = key {
+            assert_eq!(curve, EcCurve::P256);
+            assert_eq!(curve_type, CurveType::Nist);
+        } else {
+            panic!("unexpected key type");
+        }
     }
 }
