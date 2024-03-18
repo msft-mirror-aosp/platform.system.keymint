@@ -145,7 +145,27 @@ rust_fuzz {
     rustlibs: ["libkmr_wire"],
     host_supported: true,
     fuzz_config: {
-        cc: ["drysdale@google.com", "hasinitg@google.com"],
+        cc: [
+            "drysdale@google.com",
+            "hasinitg@google.com",
+        ],
+        componentid: 1084733,
+        hotlists: ["4271696"],
+        fuzz_on_haiku_device: true,
+        fuzz_on_haiku_host: true,
+    },
+}
+
+rust_fuzz {
+    name: "libkmr_wire_fuzz_legacy_message",
+    srcs: ["fuzz/fuzz_targets/legacy_message.rs"],
+    rustlibs: ["libkmr_wire"],
+    host_supported: true,
+    fuzz_config: {
+        cc: [
+            "drysdale@google.com",
+            "hasinitg@google.com",
+        ],
         componentid: 1084733,
         hotlists: ["4271696"],
         fuzz_on_haiku_device: true,
