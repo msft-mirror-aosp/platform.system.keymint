@@ -158,10 +158,6 @@ impl AuthInfo {
     }
 }
 
-/// Newtype holding a [`keymint::HardwareAuthToken`] that has already been authenticated.
-#[derive(Debug, Clone)]
-struct HardwareAuthenticatedToken(pub HardwareAuthToken);
-
 impl crate::KeyMintTa {
     pub(crate) fn begin_operation(
         &mut self,
@@ -673,7 +669,7 @@ impl crate::KeyMintTa {
         now: Option<Timestamp>,
         timeout_secs: Option<u32>,
         challenge: Option<i64>,
-    ) -> Result<HardwareAuthenticatedToken, Error> {
+    ) -> Result<(), Error> {
         // Common check: confirm the HMAC tag in the token is valid.
         let mac_input = crate::hardware_auth_token_mac_input(&auth_token)?;
         if !self.verify_device_hmac(&mac_input, &auth_token.mac)? {
@@ -720,7 +716,7 @@ impl crate::KeyMintTa {
                 return Err(km_err!(KeyUserNotAuthenticated, "challenge mismatch"));
             }
         }
-        Ok(HardwareAuthenticatedToken(auth_token))
+        Ok(())
     }
 
     /// Verify that an optional confirmation token matches the provided `data`.
