@@ -176,7 +176,7 @@ in [`kmr_hal::device`](hal/src/device.rs).
 **Checklist:**
 
 - [ ] Root key retrieval implementation.
-- [ ] Attestation key / chain retrieval implementation.
+- [ ] Attestation key / chain retrieval implementation (optional).
 - [ ] Attestation device ID retrieval implementation.
 - [ ] Retrieval of BCC and DICE artefacts.
 - [ ] Secure storage implementation (optional).

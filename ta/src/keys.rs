@@ -105,13 +105,16 @@ impl crate::KeyMintTa {
         &self,
         key_type: device::SigningKeyType,
     ) -> Result<SigningInfo, Error> {
+        let sign_info = self.dev.sign_info.as_ref().ok_or_else(|| {
+            km_err!(AttestationKeysNotProvisioned, "batch attestation keys not available")
+        })?;
         // Retrieve the chain and issuer information, which is cached after first retrieval.
         let mut attestation_chain_info = self.attestation_chain_info.borrow_mut();
         let chain_info = match attestation_chain_info.entry(key_type) {
             Entry::Occupied(e) => e.into_mut(),
             Entry::Vacant(e) => {
                 // Retrieve and store the cert chain information (as this is public).
-                let chain = self.dev.sign_info.cert_chain(key_type)?;
+                let chain = sign_info.cert_chain(key_type)?;
                 let issuer =
                     cert::extract_subject(chain.first().ok_or_else(|| {
                         km_err!(KeymintNotConfigured, "empty attestation chain")
@@ -121,7 +124,7 @@ impl crate::KeyMintTa {
         };
 
         // Retrieve the signing key information (which will be dropped when signing is done).
-        let signing_key = self.dev.sign_info.signing_key(key_type)?;
+        let signing_key = sign_info.signing_key(key_type)?;
         Ok(SigningInfo {
             attestation_info: None,
             signing_key,
