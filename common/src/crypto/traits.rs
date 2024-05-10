@@ -1,48 +1,65 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Traits representing abstractions of cryptographic functionality.
 use super::*;
-use crate::{crypto::ec::Key, explicit, keyblob, vec_try, Error};
+use crate::{crypto::ec::Key, der_err, explicit, keyblob, vec_try, Error};
 use alloc::{boxed::Box, vec::Vec};
 use der::Decode;
 use kmr_wire::{keymint, keymint::Digest, KeySizeInBits, RsaExponent};
 use log::{error, warn};
 
 /// Combined collection of trait implementations that must be provided.
-pub struct Implementation<'a> {
+pub struct Implementation {
     /// Random number generator.
-    pub rng: &'a mut dyn Rng,
+    pub rng: Box<dyn Rng>,
 
     /// A local clock, if available. If not available, KeyMint will require timestamp tokens to
     /// be provided by an external `ISecureClock` (with which it shares a common key).
-    pub clock: Option<&'a dyn MonotonicClock>,
+    pub clock: Option<Box<dyn MonotonicClock>>,
 
     /// A constant-time equality implementation.
-    pub compare: &'a dyn ConstTimeEq,
+    pub compare: Box<dyn ConstTimeEq>,
 
     /// AES implementation.
-    pub aes: &'a dyn Aes,
+    pub aes: Box<dyn Aes>,
 
     /// DES implementation.
-    pub des: &'a dyn Des,
+    pub des: Box<dyn Des>,
 
     /// HMAC implementation.
-    pub hmac: &'a dyn Hmac,
+    pub hmac: Box<dyn Hmac>,
 
     /// RSA implementation.
-    pub rsa: &'a dyn Rsa,
+    pub rsa: Box<dyn Rsa>,
 
     /// EC implementation.
-    pub ec: &'a dyn Ec,
+    pub ec: Box<dyn Ec>,
 
     /// CKDF implementation.
-    pub ckdf: &'a dyn Ckdf,
+    pub ckdf: Box<dyn Ckdf>,
 
     /// HKDF implementation.
-    pub hkdf: &'a dyn Hkdf,
+    pub hkdf: Box<dyn Hkdf>,
+
+    /// SHA-256 implementation.
+    pub sha256: Box<dyn Sha256>,
 }
 
 /// Abstraction of a random number generator that is cryptographically secure
 /// and which accepts additional entropy to be mixed in.
-pub trait Rng {
+pub trait Rng: Send {
     /// Add entropy to the generator's pool.
     fn add_entropy(&mut self, data: &[u8]);
     /// Generate random data.
@@ -57,7 +74,7 @@ pub trait Rng {
 
 /// Abstraction of constant-time comparisons, for use in cryptographic contexts where timing attacks
 /// need to be avoided.
-pub trait ConstTimeEq {
+pub trait ConstTimeEq: Send {
     /// Indicate whether arguments are the same.
     fn eq(&self, left: &[u8], right: &[u8]) -> bool;
     /// Indicate whether arguments are the different.
@@ -67,7 +84,7 @@ pub trait ConstTimeEq {
 }
 
 /// Abstraction of a monotonic clock.
-pub trait MonotonicClock {
+pub trait MonotonicClock: Send {
     /// Return the current time in milliseconds since some arbitrary point in time.  Time must be
     /// monotonically increasing, and "current time" must not repeat until the Android device
     /// reboots, or until at least 50 million years have elapsed.  Time must also continue to
@@ -77,7 +94,7 @@ pub trait MonotonicClock {
 }
 
 /// Abstraction of AES functionality.
-pub trait Aes {
+pub trait Aes: Send {
     /// Generate an AES key.  The default implementation fills with random data.  Key generation
     /// parameters are passed in for reference, to allow for implementations that might have
     /// parameter-specific behaviour.
@@ -139,7 +156,7 @@ pub trait Aes {
 }
 
 /// Abstraction of 3-DES functionality.
-pub trait Des {
+pub trait Des: Send {
     /// Generate a triple DES key. Key generation parameters are passed in for reference, to allow
     /// for implementations that might have parameter-specific behaviour.
     fn generate_key(
@@ -173,7 +190,7 @@ pub trait Des {
 }
 
 /// Abstraction of HMAC functionality.
-pub trait Hmac {
+pub trait Hmac: Send {
     /// Generate an HMAC key. Key generation parameters are passed in for reference, to allow for
     /// implementations that might have parameter-specific behaviour.
     fn generate_key(
@@ -215,14 +232,14 @@ pub trait Hmac {
 
 /// Abstraction of AES-CMAC functionality. (Note that this is not exposed in the KeyMint HAL API
 /// directly, but is required for the CKDF operations involved in `ISharedSecret` negotiation.)
-pub trait AesCmac {
+pub trait AesCmac: Send {
     /// Create an AES-CMAC operation. Implementations can assume that `key` will have length
     /// of either 16 (AES-128) or 32 (AES-256).
     fn begin(&self, key: OpaqueOr<aes::Key>) -> Result<Box<dyn AccumulatingOperation>, Error>;
 }
 
 /// Abstraction of RSA functionality.
-pub trait Rsa {
+pub trait Rsa: Send {
     /// Generate an RSA key. Key generation parameters are passed in for reference, to allow for
     /// implementations that might have parameter-specific behaviour.
     fn generate_key(
@@ -277,7 +294,7 @@ pub trait Rsa {
 }
 
 /// Abstraction of EC functionality.
-pub trait Ec {
+pub trait Ec: Send {
     /// Generate an EC key for a NIST curve.  Key generation parameters are passed in for reference,
     /// to allow for implementations that might have parameter-specific behaviour.
     fn generate_nist_key(
@@ -347,7 +364,8 @@ pub trait Ec {
             | Key::P256(nist_key)
             | Key::P384(nist_key)
             | Key::P521(nist_key) => {
-                let ec_pvt_key = sec1::EcPrivateKey::from_der(nist_key.0.as_slice())?;
+                let ec_pvt_key = sec1::EcPrivateKey::from_der(nist_key.0.as_slice())
+                    .map_err(|e| der_err!(e, "failed to parse DER NIST EC PrivateKey"))?;
                 match ec_pvt_key.public_key {
                     Some(pub_key) => Ok(pub_key.to_vec()),
                     None => {
@@ -388,7 +406,7 @@ pub trait Ec {
 }
 
 /// Abstraction of an in-progress operation that emits data as it progresses.
-pub trait EmittingOperation {
+pub trait EmittingOperation: Send {
     /// Update operation with data.
     fn update(&mut self, data: &[u8]) -> Result<Vec<u8>, Error>;
 
@@ -404,7 +422,7 @@ pub trait AadOperation: EmittingOperation {
 }
 
 /// Abstraction of an in-progress operation that only emits data when it completes.
-pub trait AccumulatingOperation {
+pub trait AccumulatingOperation: Send {
     /// Maximum size of accumulated input.
     fn max_input_size(&self) -> Option<usize> {
         None
@@ -421,14 +439,17 @@ pub trait AccumulatingOperation {
 ///
 /// A default implementation of this trait is available (in `crypto.rs`) for any type that
 /// implements [`Hmac`].
-pub trait Hkdf {
+pub trait Hkdf: Send {
+    /// Perform combined HKDF using the input key material in `ikm`.
     fn hkdf(&self, salt: &[u8], ikm: &[u8], info: &[u8], out_len: usize) -> Result<Vec<u8>, Error> {
         let prk = self.extract(salt, ikm)?;
         self.expand(&prk, info, out_len)
     }
 
+    /// Perform the HKDF-Extract step on the input key material in `ikm`, using optional `salt`.
     fn extract(&self, salt: &[u8], ikm: &[u8]) -> Result<OpaqueOr<hmac::Key>, Error>;
 
+    /// Perform the HKDF-Expand step using the pseudo-random key in `prk`.
     fn expand(
         &self,
         prk: &OpaqueOr<hmac::Key>,
@@ -442,7 +463,8 @@ pub trait Hkdf {
 ///
 /// Aa default implementation of this trait is available (in `crypto.rs`) for any type that
 /// implements [`AesCmac`].
-pub trait Ckdf {
+pub trait Ckdf: Send {
+    /// Perform CKDF using the key material in `key`.
     fn ckdf(
         &self,
         key: &OpaqueOr<aes::Key>,
@@ -450,6 +472,12 @@ pub trait Ckdf {
         chunks: &[&[u8]],
         out_len: usize,
     ) -> Result<Vec<u8>, Error>;
+}
+
+/// Abstraction for SHA-256 hashing.
+pub trait Sha256: Send {
+    /// Generate the SHA-256 input of `data`.
+    fn hash(&self, data: &[u8]) -> Result<[u8; 32], Error>;
 }
 
 ////////////////////////////////////////////////////////////
@@ -478,6 +506,7 @@ macro_rules! unimpl {
     };
 }
 
+/// Stub implementation of [`Rng`].
 pub struct NoOpRng;
 impl Rng for NoOpRng {
     fn add_entropy(&mut self, _data: &[u8]) {
@@ -488,6 +517,7 @@ impl Rng for NoOpRng {
     }
 }
 
+/// Stub implementation of [`ConstTimeEq`].
 #[derive(Clone)]
 pub struct InsecureEq;
 impl ConstTimeEq for InsecureEq {
@@ -497,6 +527,7 @@ impl ConstTimeEq for InsecureEq {
     }
 }
 
+/// Stub implementation of [`MonotonicClock`].
 pub struct NoOpClock;
 impl MonotonicClock for NoOpClock {
     fn now(&self) -> MillisecondsSinceEpoch {
@@ -505,6 +536,7 @@ impl MonotonicClock for NoOpClock {
     }
 }
 
+/// Stub implementation of [`Aes`].
 pub struct NoOpAes;
 impl Aes for NoOpAes {
     fn begin(
@@ -525,6 +557,7 @@ impl Aes for NoOpAes {
     }
 }
 
+/// Stub implementation of [`Des`].
 pub struct NoOpDes;
 impl Des for NoOpDes {
     fn begin(
@@ -537,6 +570,7 @@ impl Des for NoOpDes {
     }
 }
 
+/// Stub implementation of [`Hmac`].
 pub struct NoOpHmac;
 impl Hmac for NoOpHmac {
     fn begin(
@@ -548,6 +582,7 @@ impl Hmac for NoOpHmac {
     }
 }
 
+/// Stub implementation of [`Cmac`].
 pub struct NoOpAesCmac;
 impl AesCmac for NoOpAesCmac {
     fn begin(&self, _key: OpaqueOr<aes::Key>) -> Result<Box<dyn AccumulatingOperation>, Error> {
@@ -555,6 +590,7 @@ impl AesCmac for NoOpAesCmac {
     }
 }
 
+/// Stub implementation of [`Rsa`].
 pub struct NoOpRsa;
 impl Rsa for NoOpRsa {
     fn generate_key(
@@ -584,6 +620,7 @@ impl Rsa for NoOpRsa {
     }
 }
 
+/// Stub implementation of [`Ec`].
 pub struct NoOpEc;
 impl Ec for NoOpEc {
     fn generate_nist_key(
@@ -639,6 +676,7 @@ impl Ec for NoOpEc {
     }
 }
 
+/// Stub implementation of [`keyblob::SecureDeletionSecretManager`].
 pub struct NoOpSdsManager;
 impl keyblob::SecureDeletionSecretManager for NoOpSdsManager {
     fn get_or_create_factory_reset_secret(

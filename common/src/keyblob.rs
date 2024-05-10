@@ -1,3 +1,17 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Key blob manipulation functionality.
 
 use crate::{
@@ -33,12 +47,14 @@ pub struct SecureDeletionSlot(pub u32);
 /// Keyblob format version.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, AsCborValue)]
 pub enum Version {
+    /// Version 1.
     V1 = 0,
 }
 
 /// Encrypted key material, as translated to/from CBOR.
 #[derive(Clone, Debug)]
 pub enum EncryptedKeyBlob {
+    /// Version 1 key blob.
     V1(EncryptedKeyBlobV1),
     // Future versions go here...
 }
@@ -49,11 +65,13 @@ impl EncryptedKeyBlob {
         Self::from_slice(data)
             .map_err(|e| km_err!(InvalidKeyBlob, "failed to parse keyblob: {:?}", e))
     }
+    /// Return the secure deletion slot for the key, if present.
     pub fn secure_deletion_slot(&self) -> Option<SecureDeletionSlot> {
         match self {
             EncryptedKeyBlob::V1(blob) => blob.secure_deletion_slot,
         }
     }
+    /// Return the additional KEK context for the key.
     pub fn kek_context(&self) -> &[u8] {
         match self {
             EncryptedKeyBlob::V1(blob) => &blob.kek_context,
@@ -171,8 +189,11 @@ pub struct SecureDeletionData {
 /// Indication of what kind of key operation requires a secure deletion slot.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SlotPurpose {
+    /// Secure deletion slot needed for key generation.
     KeyGeneration,
+    /// Secure deletion slot needed for key import.
     KeyImport,
+    /// Secure deletion slot needed for upgrade of an existing key.
     KeyUpgrade,
 }
 
@@ -247,8 +268,11 @@ impl<'a> SlotHolder<'a> {
 /// Root of trust information for binding into keyblobs.
 #[derive(Debug, Clone, AsCborValue)]
 pub struct RootOfTrustInfo {
+    /// Verified boot key.
     pub verified_boot_key: Vec<u8>,
+    /// Whether the bootloader is locked.
     pub device_boot_locked: bool,
+    /// State of verified boot for the device.
     pub verified_boot_state: VerifiedBootState,
 }
 

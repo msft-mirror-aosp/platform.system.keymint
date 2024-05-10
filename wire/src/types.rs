@@ -1,3 +1,17 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use crate::keymint::{
     AttestationKey, HardwareAuthToken, KeyCharacteristics, KeyCreationResult, KeyFormat,
     KeyMintHardwareInfo, KeyParam, KeyPurpose,
@@ -27,9 +41,34 @@ pub struct RsaExponent(pub u64);
 /// Default maximum supported size for CBOR-serialized messages.
 pub const DEFAULT_MAX_SIZE: usize = 4096;
 
-/// Marker type indicating failure to convert into an `enum` variant.
+/// Marker type indicating failure to convert into a wire type.  For `enum` wire types, the variant
+/// names match the `enum` whose value failed to convert.
 #[derive(Debug)]
-pub struct ValueNotRecognized;
+pub enum ValueNotRecognized {
+    // Enum type names.
+    KeyPurpose,
+    Algorithm,
+    BlockMode,
+    Digest,
+    PaddingMode,
+    EcCurve,
+    ErrorCode,
+    HardwareAuthenticatorType,
+    KeyFormat,
+    KeyOrigin,
+    SecurityLevel,
+    Tag,
+    TagType,
+    KmVersion,
+    EekCurve,
+    Origin,
+    // Non-enum types.
+    Bool,
+    Blob,
+    DateTime,
+    Integer,
+    LongInteger,
+}
 
 /// Trait that associates an enum value of the specified type with a type.
 /// Values of the `enum` type `T` are used to identify particular message types.
@@ -88,7 +127,7 @@ pub struct GenerateKeyRequest {
 pub struct GenerateKeyResponse {
     pub ret: KeyCreationResult,
 }
-#[derive(Debug, AsCborValue)]
+#[derive(AsCborValue)]
 pub struct ImportKeyRequest {
     pub key_params: Vec<KeyParam>,
     pub key_format: KeyFormat,
@@ -99,7 +138,7 @@ pub struct ImportKeyRequest {
 pub struct ImportKeyResponse {
     pub ret: KeyCreationResult,
 }
-#[derive(Debug, AsCborValue)]
+#[derive(AsCborValue)]
 pub struct ImportWrappedKeyRequest {
     pub wrapped_key_data: Vec<u8>,
     pub wrapping_key_blob: Vec<u8>,
@@ -146,13 +185,6 @@ pub struct BeginRequest {
 pub struct BeginResponse {
     pub ret: InternalBeginResult, // special case: no Binder ref here
 }
-#[derive(Debug, AsCborValue)]
-pub struct DeviceLockedRequest {
-    pub password_only: bool,
-    pub timestamp_token: Option<TimeStampToken>,
-}
-#[derive(Debug, AsCborValue)]
-pub struct DeviceLockedResponse {}
 #[derive(Debug, AsCborValue)]
 pub struct EarlyBootEndedRequest {}
 #[derive(Debug, AsCborValue)]
@@ -204,27 +236,29 @@ pub struct SendRootOfTrustResponse {}
 // IKeyMintOperation methods.  These ...Request structures include an extra `op_handle` field whose
 // value was returned in the `InternalBeginResult` type and which identifies the operation in
 // progress.
-#[derive(Debug, Clone, AsCborValue)]
+//
+// `Debug` deliberately not derived to reduce the chances of inadvertent leakage of private info.
+#[derive(Clone, AsCborValue)]
 pub struct UpdateAadRequest {
     pub op_handle: i64, // Extra for internal use, from `InternalBeginResult`.
     pub input: Vec<u8>,
     pub auth_token: Option<HardwareAuthToken>,
     pub timestamp_token: Option<TimeStampToken>,
 }
-#[derive(Debug, AsCborValue)]
+#[derive(AsCborValue)]
 pub struct UpdateAadResponse {}
-#[derive(Debug, Clone, AsCborValue)]
+#[derive(Clone, AsCborValue)]
 pub struct UpdateRequest {
     pub op_handle: i64, // Extra for internal use, from `InternalBeginResult`.
     pub input: Vec<u8>,
     pub auth_token: Option<HardwareAuthToken>,
     pub timestamp_token: Option<TimeStampToken>,
 }
-#[derive(Debug, AsCborValue)]
+#[derive(AsCborValue)]
 pub struct UpdateResponse {
     pub ret: Vec<u8>,
 }
-#[derive(Debug, AsCborValue)]
+#[derive(AsCborValue)]
 pub struct FinishRequest {
     pub op_handle: i64, // Extra for internal use, from `InternalBeginResult`.
     pub input: Option<Vec<u8>>,
@@ -233,7 +267,7 @@ pub struct FinishRequest {
     pub timestamp_token: Option<TimeStampToken>,
     pub confirmation_token: Option<Vec<u8>>,
 }
-#[derive(Debug, AsCborValue)]
+#[derive(AsCborValue)]
 pub struct FinishResponse {
     pub ret: Vec<u8>,
 }
@@ -323,6 +357,14 @@ pub struct SetHalInfoRequest {
 #[derive(Debug, AsCborValue)]
 pub struct SetHalInfoResponse {}
 
+// HAL->TA at start of day.
+#[derive(Debug, PartialEq, Eq, AsCborValue)]
+pub struct SetHalVersionRequest {
+    pub aidl_version: u32,
+}
+#[derive(Debug, AsCborValue)]
+pub struct SetHalVersionResponse {}
+
 // Boot loader->TA at start of day.
 #[derive(Debug, AsCborValue)]
 pub struct SetBootInfoRequest {
@@ -360,7 +402,7 @@ pub struct SetAttestationIdsResponse {}
 
 // Result of an operation, as an error code and a response message (only present when
 // `error_code` is zero).
-#[derive(Debug, AsCborValue)]
+#[derive(AsCborValue)]
 pub struct PerformOpResponse {
     pub error_code: i32,
     pub rsp: Option<PerformOpRsp>,
@@ -466,13 +508,18 @@ macro_rules! declare_req_rsp_enums {
             }
         }
 
-
-        #[derive(Debug)]
         pub enum $reqenum {
             $( $cname($reqtyp), )*
         }
 
-        #[derive(Debug)]
+        impl $reqenum {
+            pub fn code(&self) -> $cenum {
+                match self {
+                    $( Self::$cname(_) => $cenum::$cname, )*
+                }
+            }
+        }
+
         pub enum $rspenum {
             $( $cname($rsptyp), )*
         }
@@ -582,7 +629,7 @@ declare_req_rsp_enums! { KeyMintOperation  =>    (PerformOpReq, PerformOpRsp) {
     DeviceDeleteAllKeys = 0x18 =>                      (DeleteAllKeysRequest, DeleteAllKeysResponse),
     DeviceDestroyAttestationIds = 0x19 =>              (DestroyAttestationIdsRequest, DestroyAttestationIdsResponse),
     DeviceBegin = 0x1a =>                              (BeginRequest, BeginResponse),
-    DeviceDeviceLocked = 0x1b =>                       (DeviceLockedRequest, DeviceLockedResponse),
+    // 0x1b used to be DeviceDeviceLocked, but it was never used and consequently was removed.
     DeviceEarlyBootEnded = 0x1c =>                     (EarlyBootEndedRequest, EarlyBootEndedResponse),
     DeviceConvertStorageKeyToEphemeral = 0x1d =>       (ConvertStorageKeyToEphemeralRequest, ConvertStorageKeyToEphemeralResponse),
     DeviceGetKeyCharacteristics = 0x1e =>              (GetKeyCharacteristicsRequest, GetKeyCharacteristicsResponse),
@@ -603,6 +650,7 @@ declare_req_rsp_enums! { KeyMintOperation  =>    (PerformOpReq, PerformOpRsp) {
     SetHalInfo = 0x81 =>                               (SetHalInfoRequest, SetHalInfoResponse),
     SetBootInfo = 0x82 =>                              (SetBootInfoRequest, SetBootInfoResponse),
     SetAttestationIds = 0x83 =>                        (SetAttestationIdsRequest, SetAttestationIdsResponse),
+    SetHalVersion = 0x84 =>                            (SetHalVersionRequest, SetHalVersionResponse),
 } }
 
 /// Indicate whether an operation is part of the `IRemotelyProvisionedComponent` HAL.

@@ -1,4 +1,4 @@
-// Copyright 2022, The Android Open Source Project
+// Copyright 2024, The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,18 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! BoringSSL-based implementation of constant-time comparisons.
-use kmr_common::crypto;
+//! Fuzzer for legacy request message parsing.
 
-/// Constant time comparator based on BoringSSL.
-#[derive(Clone)]
-pub struct BoringEq;
+#![no_main]
+use libfuzzer_sys::fuzz_target;
 
-impl crypto::ConstTimeEq for BoringEq {
-    fn eq(&self, left: &[u8], right: &[u8]) -> bool {
-        if left.len() != right.len() {
-            return false;
-        }
-        openssl::memcmp::eq(left, right)
-    }
-}
+fuzz_target!(|data: &[u8]| {
+    // `data` allegedly holds a legacy request message arrived from the non-secure world.
+    let _ = kmr_wire::legacy::deserialize_trusty_req(data);
+});

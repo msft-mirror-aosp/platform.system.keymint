@@ -36,7 +36,7 @@ rust_test {
     srcs: ["tests/integration_test.rs"],
     test_suites: ["general-tests"],
     edition: "2021",
-    lints: "vendor",
+    lints: "android",
     rustlibs: [
         "libciborium",
         "libciborium_io",

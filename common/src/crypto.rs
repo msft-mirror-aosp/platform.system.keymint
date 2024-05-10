@@ -1,5 +1,22 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Abstractions and related types for accessing cryptographic primitives
 //! and related functionality.
+
+// derive(N) generates a method that is missing a docstring.
+#![allow(missing_docs)]
 
 use crate::{km_err, vec_try, vec_try_with_capacity, Error, FallibleAllocExt};
 use alloc::{
@@ -13,7 +30,7 @@ use kmr_derive::AsCborValue;
 use kmr_wire::keymint::{Algorithm, Digest, EcCurve};
 use kmr_wire::{cbor, cbor_type_error, AsCborValue, CborError, KeySizeInBits, RsaExponent};
 use log::error;
-use spki::SubjectPublicKeyInfo;
+use spki::SubjectPublicKeyInfoRef;
 use zeroize::ZeroizeOnDrop;
 
 pub mod aes;
@@ -50,12 +67,19 @@ impl From<MillisecondsSinceEpoch> for kmr_wire::secureclock::Timestamp {
 /// Information for key generation.
 #[derive(Clone)]
 pub enum KeyGenInfo {
+    /// Generate an AES key of the given size.
     Aes(aes::Variant),
+    /// Generate a 3-DES key.
     TripleDes,
+    /// Generate an HMAC key of the given size.
     Hmac(KeySizeInBits),
+    /// Generate an RSA keypair of the given size using the given exponent.
     Rsa(KeySizeInBits, RsaExponent),
+    /// Generate a NIST EC keypair using the given curve.
     NistEc(ec::NistCurve),
+    /// Generate an Ed25519 keypair.
     Ed25519,
+    /// Generate an X25519 keypair.
     X25519,
 }
 
@@ -63,8 +87,11 @@ pub enum KeyGenInfo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, AsCborValue, N)]
 #[repr(i32)]
 pub enum CurveType {
+    /// NIST curve.
     Nist = 0,
+    /// EdDSA curve.
     EdDsa = 1,
+    /// XDH curve.
     Xdh = 2,
 }
 
@@ -80,7 +107,9 @@ pub struct OpaqueKeyMaterial(pub Vec<u8>);
 /// Wrapper that holds either a key of explicit type `T`, or an opaque blob of key material.
 #[derive(Clone, PartialEq, Eq)]
 pub enum OpaqueOr<T> {
+    /// Explicit key material of the given type, available in plaintext.
     Explicit(T),
+    /// Opaque key material, either encrypted or an opaque key handle.
     Opaque(OpaqueKeyMaterial),
 }
 
@@ -112,10 +141,15 @@ impl<T> From<OpaqueKeyMaterial> for OpaqueOr<T> {
 /// known/accessible to the crypto implementation, indicated by the `OpaqueOr::Opaque` variant).
 #[derive(Clone, PartialEq, Eq)]
 pub enum KeyMaterial {
+    /// AES symmetric key.
     Aes(OpaqueOr<aes::Key>),
+    /// 3-DES symmetric key.
     TripleDes(OpaqueOr<des::Key>),
+    /// HMAC symmetric key.
     Hmac(OpaqueOr<hmac::Key>),
+    /// RSA asymmetric key.
     Rsa(OpaqueOr<rsa::Key>),
+    /// Elliptic curve asymmetric key.
     Ec(EcCurve, CurveType, OpaqueOr<ec::Key>),
 }
 
@@ -126,7 +160,7 @@ macro_rules! explicit {
         if let $crate::crypto::OpaqueOr::Explicit(k) = $key {
             Ok(k)
         } else {
-            Err($crate::km_err!(UnknownError, "Expected explicit key but found opaque key!"))
+            Err($crate::km_err!(IncompatibleKeyFormat, "Expected explicit key but found opaque key!"))
         }
     }
 }
@@ -164,7 +198,7 @@ impl KeyMaterial {
         buf: &'a mut Vec<u8>,
         ec: &dyn Ec,
         rsa: &dyn Rsa,
-    ) -> Result<Option<SubjectPublicKeyInfo<'a>>, Error> {
+    ) -> Result<Option<SubjectPublicKeyInfoRef<'a>>, Error> {
         Ok(match self {
             Self::Rsa(key) => Some(key.subject_public_key_info(buf, rsa)?),
             Self::Ec(curve, curve_type, key) => {
@@ -418,7 +452,9 @@ impl AsCborValue for KeyMaterial {
 /// Direction of cipher operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SymmetricOperation {
+    /// Perform encryption.
     Encrypt,
+    /// Perform decryption.
     Decrypt,
 }
 
@@ -470,7 +506,7 @@ impl<T: Hmac> Hkdf for T {
         let prk = &explicit!(prk)?.0;
         let n = (out_len + SHA256_DIGEST_LEN - 1) / SHA256_DIGEST_LEN;
         if n > 256 {
-            return Err(km_err!(UnknownError, "overflow in hkdf"));
+            return Err(km_err!(InvalidArgument, "overflow in hkdf"));
         }
         let mut t = vec_try_with_capacity!(SHA256_DIGEST_LEN)?;
         let mut okm = vec_try_with_capacity!(n * SHA256_DIGEST_LEN)?;
@@ -529,7 +565,7 @@ impl<T: AesCmac> Ckdf for T {
         }
         if output_pos != output.len() {
             return Err(km_err!(
-                UnknownError,
+                InvalidArgument,
                 "finished at {} before end of output at {}",
                 output_pos,
                 output.len()

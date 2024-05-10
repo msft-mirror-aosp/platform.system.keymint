@@ -1,4 +1,4 @@
-// Copyright 2022, The Android Open Source Project
+// Copyright 2023, The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,18 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! BoringSSL-based implementation of constant-time comparisons.
-use kmr_common::crypto;
+//! This crate implements the IKeystoreSecurityLevel interface.
 
-/// Constant time comparator based on BoringSSL.
-#[derive(Clone)]
-pub struct BoringEq;
+//! BoringSSL-based implementation of SHA-256.
+use kmr_common::{crypto, Error};
 
-impl crypto::ConstTimeEq for BoringEq {
-    fn eq(&self, left: &[u8], right: &[u8]) -> bool {
-        if left.len() != right.len() {
-            return false;
-        }
-        openssl::memcmp::eq(left, right)
+/// [`crypto::Sha256`] implementation based on BoringSSL.
+pub struct BoringSha256;
+
+impl crypto::Sha256 for BoringSha256 {
+    fn hash(&self, data: &[u8]) -> Result<[u8; 32], Error> {
+        Ok(openssl::sha::sha256(data))
     }
 }

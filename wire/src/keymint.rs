@@ -1,3 +1,17 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Local types that are equivalent to those generated for KeyMint HAL interfaces
 //!
 //! - Enums are encoded as exhaustive Rust enums backed by `i32`, using Rust naming
@@ -40,6 +54,12 @@ pub const DEFAULT_CERT_SUBJECT: &[u8] = &[
 /// assembling the large responses sent from the TA to the HAL.
 pub const NEXT_MESSAGE_SIGNAL_TRUE: u8 = 0b00000001u8;
 pub const NEXT_MESSAGE_SIGNAL_FALSE: u8 = 0b00000000u8;
+
+/// We use Unix epoch as the start date of an undefined certificate validity period.
+pub const UNDEFINED_NOT_BEFORE: DateTime = DateTime { ms_since_epoch: 0 };
+/// Per RFC 5280 4.1.2.5, an undefined expiration (not-after) field should be set to
+/// 9999-12-31T23:59:59Z.
+pub const UNDEFINED_NOT_AFTER: DateTime = DateTime { ms_since_epoch: 253402300799000 };
 
 /// Possible verified boot state values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, N, AsCborValue)]
@@ -159,6 +179,7 @@ pub enum EcCurve {
     P256 = 1,
     P384 = 2,
     P521 = 3,
+    #[cfg(feature = "hal_v2")]
     Curve25519 = 4,
 }
 try_from_n!(EcCurve);
@@ -253,6 +274,9 @@ pub enum ErrorCode {
     Unimplemented = -100,
     VersionMismatch = -101,
     UnknownError = -1000,
+    // Implementer's namespace for error codes starts at -10000.
+    EncodingError = -20000,
+    BoringSslError = -30000,
 }
 try_from_n!(ErrorCode);
 
@@ -364,6 +388,7 @@ pub enum KeyParam {
     AttestationIdProduct(Vec<u8>),
     AttestationIdSerial(Vec<u8>),
     AttestationIdImei(Vec<u8>),
+    #[cfg(feature = "hal_v3")]
     AttestationIdSecondImei(Vec<u8>),
     AttestationIdMeid(Vec<u8>),
     AttestationIdManufacturer(Vec<u8>),
@@ -428,6 +453,7 @@ impl KeyParam {
             KeyParam::AttestationIdProduct(_) => Tag::AttestationIdProduct,
             KeyParam::AttestationIdSerial(_) => Tag::AttestationIdSerial,
             KeyParam::AttestationIdImei(_) => Tag::AttestationIdImei,
+            #[cfg(feature = "hal_v3")]
             KeyParam::AttestationIdSecondImei(_) => Tag::AttestationIdSecondImei,
             KeyParam::AttestationIdMeid(_) => Tag::AttestationIdMeid,
             KeyParam::AttestationIdManufacturer(_) => Tag::AttestationIdManufacturer,
@@ -559,6 +585,7 @@ impl crate::AsCborValue for KeyParam {
                 KeyParam::AttestationIdSerial(<Vec<u8>>::from_cbor_value(raw)?)
             }
             Tag::AttestationIdImei => KeyParam::AttestationIdImei(<Vec<u8>>::from_cbor_value(raw)?),
+            #[cfg(feature = "hal_v3")]
             Tag::AttestationIdSecondImei => {
                 KeyParam::AttestationIdSecondImei(<Vec<u8>>::from_cbor_value(raw)?)
             }
@@ -652,6 +679,7 @@ impl crate::AsCborValue for KeyParam {
             KeyParam::AttestationIdProduct(v) => (Tag::AttestationIdProduct, v.to_cbor_value()?),
             KeyParam::AttestationIdSerial(v) => (Tag::AttestationIdSerial, v.to_cbor_value()?),
             KeyParam::AttestationIdImei(v) => (Tag::AttestationIdImei, v.to_cbor_value()?),
+            #[cfg(feature = "hal_v3")]
             KeyParam::AttestationIdSecondImei(v) => {
                 (Tag::AttestationIdSecondImei, v.to_cbor_value()?)
             }
@@ -681,246 +709,355 @@ impl crate::AsCborValue for KeyParam {
         Some("KeyParam".to_string())
     }
     fn cddl_schema() -> Option<String> {
-        Some(format!(
-            "&(
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-    [{}, {}], ; {}
-)",
+        let mut result = "&(\n".to_string();
+
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::Algorithm as i32,
             Algorithm::cddl_ref(),
-            "Tag_Algorithm",
+            "Tag_Algorithm"
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::BlockMode as i32,
             BlockMode::cddl_ref(),
             "Tag_BlockMode",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::Padding as i32,
             PaddingMode::cddl_ref(),
             "Tag_Padding",
-            Tag::Digest as i32,
-            Digest::cddl_ref(),
-            "Tag_Digest",
+        );
+        result +=
+            &format!("    [{}, {}], ; {}\n", Tag::Digest as i32, Digest::cddl_ref(), "Tag_Digest",);
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::EcCurve as i32,
             EcCurve::cddl_ref(),
             "Tag_EcCurve",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::Origin as i32,
             KeyOrigin::cddl_ref(),
             "Tag_Origin",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::Purpose as i32,
             KeyPurpose::cddl_ref(),
             "Tag_Purpose",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::KeySize as i32,
             KeySizeInBits::cddl_ref(),
             "Tag_KeySize",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::CallerNonce as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_CallerNonce",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::MinMacLength as i32,
             u32::cddl_ref(),
             "Tag_MinMacLength",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::RsaPublicExponent as i32,
             RsaExponent::cddl_ref(),
             "Tag_RsaPublicExponent",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::IncludeUniqueId as i32,
             "true",
             "Tag_IncludeUniqueId",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::RsaOaepMgfDigest as i32,
             Digest::cddl_ref(),
             "Tag_RsaOaepMgfDigest",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::BootloaderOnly as i32,
             "true",
             "Tag_BootloaderOnly",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::RollbackResistance as i32,
             "true",
             "Tag_RollbackResistance",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::EarlyBootOnly as i32,
             "true",
             "Tag_EarlyBootOnly",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::ActiveDatetime as i32,
             DateTime::cddl_ref(),
             "Tag_ActiveDatetime",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::OriginationExpireDatetime as i32,
             DateTime::cddl_ref(),
             "Tag_OriginationExpireDatetime",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::UsageExpireDatetime as i32,
             DateTime::cddl_ref(),
             "Tag_UsageExpireDatetime",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::MaxUsesPerBoot as i32,
             u32::cddl_ref(),
             "Tag_MaxUsesPerBoot",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::UsageCountLimit as i32,
             u32::cddl_ref(),
             "Tag_UsageCountLimit",
-            Tag::UserId as i32,
-            u32::cddl_ref(),
-            "Tag_UserId",
+        );
+        result +=
+            &format!("    [{}, {}], ; {}\n", Tag::UserId as i32, u32::cddl_ref(), "Tag_UserId",);
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::UserSecureId as i32,
             u64::cddl_ref(),
             "Tag_UserSecureId",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::NoAuthRequired as i32,
             "true",
             "Tag_NoAuthRequired",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::UserAuthType as i32,
             u32::cddl_ref(),
             "Tag_UserAuthType",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::AuthTimeout as i32,
             u32::cddl_ref(),
             "Tag_AuthTimeout",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::AllowWhileOnBody as i32,
             "true",
             "Tag_AllowWhileOnBody",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::TrustedUserPresenceRequired as i32,
             "true",
             "Tag_TrustedUserPresenceRequired",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::TrustedConfirmationRequired as i32,
             "true",
             "Tag_TrustedConfirmationRequired",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::UnlockedDeviceRequired as i32,
             "true",
             "Tag_UnlockedDeviceRequired",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::ApplicationId as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_ApplicationId",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::ApplicationData as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_ApplicationData",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::CreationDatetime as i32,
             DateTime::cddl_ref(),
             "Tag_CreationDatetime",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::RootOfTrust as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_RootOfTrust",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::OsVersion as i32,
             u32::cddl_ref(),
             "Tag_OsVersion",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::OsPatchlevel as i32,
             u32::cddl_ref(),
             "Tag_OsPatchlevel",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::AttestationChallenge as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_AttestationChallenge",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::AttestationApplicationId as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_AttestationApplicationId",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::AttestationIdBrand as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_AttestationIdBrand",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::AttestationIdDevice as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_AttestationIdDevice",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::AttestationIdProduct as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_AttestationIdProduct",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::AttestationIdSerial as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_AttestationIdSerial",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::AttestationIdImei as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_AttestationIdImei",
-            Tag::AttestationIdSecondImei as i32,
-            Vec::<u8>::cddl_ref(),
-            "Tag_AttestationIdSecondImei",
+        );
+        #[cfg(feature = "hal_v3")]
+        {
+            result += &format!(
+                "    [{}, {}], ; {}\n",
+                Tag::AttestationIdSecondImei as i32,
+                Vec::<u8>::cddl_ref(),
+                "Tag_AttestationIdSecondImei",
+            );
+        }
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::AttestationIdMeid as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_AttestationIdMeid",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::AttestationIdManufacturer as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_AttestationIdManufacturer",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::AttestationIdModel as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_AttestationIdModel",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::VendorPatchlevel as i32,
             u32::cddl_ref(),
             "Tag_VendorPatchlevel",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::BootPatchlevel as i32,
             u32::cddl_ref(),
             "Tag_BootPatchlevel",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::DeviceUniqueAttestation as i32,
             "true",
             "Tag_DeviceUniqueAttestation",
-            Tag::StorageKey as i32,
-            "true",
-            "Tag_StorageKey",
+        );
+        result +=
+            &format!("    [{}, {}], ; {}\n", Tag::StorageKey as i32, "true", "Tag_StorageKey",);
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::Nonce as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_Nonce",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::MacLength as i32,
             u32::cddl_ref(),
             "Tag_MacLength",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::ResetSinceIdRotation as i32,
             "true",
             "Tag_ResetSinceIdRotation",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::CertificateSerial as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_CertificateSerial",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::CertificateSubject as i32,
             Vec::<u8>::cddl_ref(),
             "Tag_CertificateSubject",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::CertificateNotBefore as i32,
             DateTime::cddl_ref(),
             "Tag_CertificateNotBefore",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::CertificateNotAfter as i32,
             DateTime::cddl_ref(),
             "Tag_CertificateNotAfter",
+        );
+        result += &format!(
+            "    [{}, {}], ; {}\n",
             Tag::MaxBootLevel as i32,
             u32::cddl_ref(),
             "Tag_MaxBootLevel",
-        ))
+        );
+        result += ")";
+        Some(result)
     }
 }
 
@@ -1039,6 +1176,7 @@ pub enum Tag {
     DeviceUniqueAttestation = 1879048912,
     IdentityCredentialKey = 1879048913,
     StorageKey = 1879048914,
+    #[cfg(feature = "hal_v3")]
     AttestationIdSecondImei = -1879047469,
     AssociatedData = -1879047192,
     Nonce = -1879047191,

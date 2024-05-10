@@ -1,3 +1,17 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! KeyMint trusted application (TA) implementation.
 
 #![no_std]
@@ -12,7 +26,7 @@ use kmr_common::{
     crypto::{self, hmac, OpaqueOr},
     get_bool_tag_value,
     keyblob::{self, RootOfTrustInfo, SecureDeletionSlot},
-    km_err, tag, vec_try, vec_try_with_capacity, Error, FallibleAllocExt,
+    km_err, tag, try_to_vec, vec_try, vec_try_with_capacity, Error, FallibleAllocExt,
 };
 use kmr_wire::{
     coset::TaggedCborSerializable,
@@ -23,11 +37,10 @@ use kmr_wire::{
     },
     rpc,
     rpc::{EekCurve, IRPC_V2, IRPC_V3},
-    secureclock::{TimeStampToken, Timestamp},
     sharedsecret::SharedSecretParameters,
     *,
 };
-use log::{debug, error, info, warn};
+use log::{error, info, trace, warn};
 
 mod cert;
 mod clock;
@@ -42,6 +55,21 @@ use operation::{OpHandle, Operation};
 
 #[cfg(test)]
 mod tests;
+
+/// Possible KeyMint HAL versions
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyMintHalVersion {
+    /// V3 adds support for attestation of second IMEI value.
+    V3 = 300,
+    /// V2 adds support for curve 25519 and root-of-trust transfer.
+    V2 = 200,
+    /// V1 is the initial version of the KeyMint HAL.
+    V1 = 100,
+}
+
+/// Version code for current KeyMint.
+pub const KEYMINT_CURRENT_VERSION: KeyMintHalVersion = KeyMintHalVersion::V3;
 
 /// Maximum number of parallel operations supported when running as TEE.
 const MAX_TEE_OPERATIONS: usize = 16;
@@ -68,23 +96,26 @@ struct AttestationChainInfo {
 }
 
 /// KeyMint device implementation, running in secure environment.
-pub struct KeyMintTa<'a> {
+pub struct KeyMintTa {
     /**
      * State that is fixed on construction.
      */
 
     /// Trait objects that hold this device's implementations of the abstract cryptographic
     /// functionality traits.
-    imp: crypto::Implementation<'a>,
+    imp: crypto::Implementation,
 
     /// Trait objects that hold this device's implementations of per-device functionality.
-    dev: device::Implementation<'a>,
+    dev: device::Implementation,
 
     /// Information about this particular KeyMint implementation's hardware.
     hw_info: HardwareInfo,
 
     /// Information about the implementation of the IRemotelyProvisionedComponent (IRPC) HAL.
     rpc_info: RpcInfo,
+
+    /// The version of the HAL AIDL interface specification that this TA acts as.
+    aidl_version: KeyMintHalVersion,
 
     /**
      * State that is set after the TA starts, but latched thereafter.
@@ -106,12 +137,12 @@ pub struct KeyMintTa<'a> {
     /// Attestation ID information, fixed forever for a device, but retrieved on first use.
     attestation_id_info: RefCell<Option<Rc<AttestationIdInfo>>>,
 
-    // Public DICE artifacts (UDS certs and the DICE chain) included in the certificate signing
-    // requests (CSR) and the algorithm used to sign the CSR for IRemotelyProvisionedComponent
-    // (IRPC) HAL. Fixed for a device. Retrieved on first use.
-    //
-    // Note: This information is cached only in the implementations of IRPC HAL V3 and
-    // IRPC HAL V2 in production mode.
+    /// Public DICE artifacts (UDS certs and the DICE chain) included in the certificate signing
+    /// requests (CSR) and the algorithm used to sign the CSR for IRemotelyProvisionedComponent
+    /// (IRPC) HAL. Fixed for a device. Retrieved on first use.
+    ///
+    /// Note: This information is cached only in the implementations of IRPC HAL V3 and
+    /// IRPC HAL V2 in production mode.
     dice_info: RefCell<Option<Rc<DiceInfo>>>,
 
     /// Whether the device is still in early-boot.
@@ -123,9 +154,6 @@ pub struct KeyMintTa<'a> {
     /**
      * State that changes during operation.
      */
-
-    /// Whether the device's screen is locked.
-    device_locked: RefCell<LockState>,
 
     /// Challenge for root-of-trust transfer (StrongBox only).
     rot_challenge: [u8; 16],
@@ -166,7 +194,7 @@ pub fn split_rsp(mut rsp_data: &[u8], max_size: usize) -> Result<Vec<Vec<u8>>, E
         let mut rsp = vec_try_with_capacity!(allowed_msg_length + 1)?;
         rsp.push(NEXT_MESSAGE_SIGNAL_TRUE);
         rsp.extend_from_slice(&rsp_data[..allowed_msg_length]);
-        debug!("Current response size with signalling byte: {}", rsp.len());
+        trace!("Current response size with signalling byte: {}", rsp.len());
         split_rsp.push(rsp);
         rsp_data = &rsp_data[allowed_msg_length..];
     }
@@ -177,26 +205,19 @@ pub fn split_rsp(mut rsp_data: &[u8], max_size: usize) -> Result<Vec<Vec<u8>>, E
     Ok(split_rsp)
 }
 
-/// Device lock state
-#[derive(Clone, Copy, Debug)]
-enum LockState {
-    /// Device is unlocked.
-    Unlocked,
-    /// Device has been locked since the given time.
-    LockedSince(Timestamp),
-    /// Device has been locked since the given time, and can only be unlocked with a password
-    /// (rather than a biometric).
-    PasswordLockedSince(Timestamp),
-}
-
 /// Hardware information.
 #[derive(Clone, Debug)]
 pub struct HardwareInfo {
     // Fields that correspond to the HAL `KeyMintHardwareInfo` type.
+    /// Security level that this KeyMint implementation is running at.
     pub security_level: SecurityLevel,
+    /// Version number.
     pub version_number: i32,
+    /// KeyMint implementation name.
     pub impl_name: &'static str,
+    /// Author of KeyMint implementation.
     pub author_name: &'static str,
+    /// Unique identifier for this KeyMint.
     pub unique_id: &'static str,
     // The `timestamp_token_required` field in `KeyMintHardwareInfo` is skipped here because it gets
     // set depending on whether a local clock is available.
@@ -206,12 +227,15 @@ pub struct HardwareInfo {
 /// and DeviceInfo.aidl, for IRemotelyProvisionedComponent (IRPC) HAL V2.
 #[derive(Debug)]
 pub struct RpcInfoV2 {
-    // Used in RpcHardwareInfo.aidl
+    // Fields used in `RpcHardwareInfo.aidl`:
+    /// Author of KeyMint implementation.
     pub author_name: &'static str,
+    /// EEK curve supported by this implementation.
     pub supported_eek_curve: EekCurve,
+    /// Unique identifier for this KeyMint.
     pub unique_id: &'static str,
-    // Used as `DeviceInfo.fused`.
-    // Indication of whether secure boot is enforced for the processor running this code.
+    /// Indication of whether secure boot is enforced for the processor running this code.
+    /// Used as `DeviceInfo.fused`.
     pub fused: bool,
 }
 
@@ -219,23 +243,29 @@ pub struct RpcInfoV2 {
 /// and DeviceInfo.aidl, for IRemotelyProvisionedComponent (IRPC) HAL V3.
 #[derive(Debug)]
 pub struct RpcInfoV3 {
-    // Used in RpcHardwareInfo.aidl
+    // Fields used in `RpcHardwareInfo.aidl`:
+    /// Author of KeyMint implementation.
     pub author_name: &'static str,
+    /// Unique identifier for this KeyMint.
     pub unique_id: &'static str,
-    // Used as `DeviceInfo.fused`.
-    // Indication of whether secure boot is enforced for the processor running this code.
+    /// Indication of whether secure boot is enforced for the processor running this code.
+    /// Used as `DeviceInfo.fused`.
     pub fused: bool,
+    /// Supported number of keys in a CSR.
     pub supported_num_of_keys_in_csr: i32,
 }
 
 /// Enum to distinguish the set of information required for different versions of IRPC HAL
 /// implementations
 pub enum RpcInfo {
+    /// Information for v2 of the IRPC HAL.
     V2(RpcInfoV2),
+    /// Information for v3 of the IRPC HAL.
     V3(RpcInfoV3),
 }
 
 impl RpcInfo {
+    /// Indicate the HAL version of RPC information.
     pub fn get_version(&self) -> i32 {
         match self {
             RpcInfo::V2(_) => IRPC_V2,
@@ -249,22 +279,25 @@ impl RpcInfo {
 /// boot, e.g. for running GSI).
 #[derive(Clone, Copy, Debug)]
 pub struct HalInfo {
+    /// OS version.
     pub os_version: u32,
-    pub os_patchlevel: u32,     // YYYYMM format
-    pub vendor_patchlevel: u32, // YYYYMMDD format
+    /// OS patchlevel, in YYYYMM format.
+    pub os_patchlevel: u32,
+    /// Vendor patchlevel, in YYYYMMDD format
+    pub vendor_patchlevel: u32,
 }
 
 /// Identifier for a keyblob.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct KeyId([u8; 32]);
 
-impl<'a> KeyMintTa<'a> {
+impl KeyMintTa {
     /// Create a new [`KeyMintTa`] instance.
     pub fn new(
         hw_info: HardwareInfo,
         rpc_info: RpcInfo,
-        imp: crypto::Implementation<'a>,
-        dev: device::Implementation<'a>,
+        imp: crypto::Implementation,
+        dev: device::Implementation,
     ) -> Self {
         let max_operations = if hw_info.security_level == SecurityLevel::Strongbox {
             MAX_STRONGBOX_OPERATIONS
@@ -275,9 +308,6 @@ impl<'a> KeyMintTa<'a> {
             imp,
             dev,
             in_early_boot: true,
-            // Note: Keystore currently doesn't trigger the `deviceLocked()` KeyMint entrypoint,
-            // so treat the device as not-locked at start-of-day.
-            device_locked: RefCell::new(LockState::Unlocked),
             device_hmac: None,
             rot_challenge: [0; 16],
             // Work around Rust limitation that `vec![None; n]` doesn't work.
@@ -287,6 +317,7 @@ impl<'a> KeyMintTa<'a> {
             shared_secret_params: None,
             hw_info,
             rpc_info,
+            aidl_version: KEYMINT_CURRENT_VERSION,
             boot_info: None,
             rot_data: None,
             hal_info: None,
@@ -325,6 +356,18 @@ impl<'a> KeyMintTa<'a> {
             .ok_or_else(|| km_err!(HardwareNotYetAvailable, "no boot info available"))
     }
 
+    /// Return a copy of the device's boot information, with the verified boot key
+    /// hashed (if necessary).
+    fn boot_info_hashed_key(&self) -> Result<keymint::BootInfo, Error> {
+        let mut boot_info = self.boot_info()?.clone();
+        if boot_info.verified_boot_key.len() > 32 {
+            // It looks like we have the actual key, not a hash thereof.  Change that.
+            boot_info.verified_boot_key =
+                try_to_vec(&self.imp.sha256.hash(&boot_info.verified_boot_key)?)?;
+        }
+        Ok(boot_info)
+    }
+
     /// Parse and decrypt an encrypted key blob, allowing through keys that require upgrade due to
     /// patchlevel updates.  Keys that appear to be in a legacy format may still emit a
     /// [`ErrorCode::KeyRequiresUpgrade`] error.
@@ -354,10 +397,10 @@ impl<'a> KeyMintTa<'a> {
         let keyblob = keyblob::decrypt(
             match &self.dev.sdd_mgr {
                 None => None,
-                Some(mr) => Some(*mr),
+                Some(mr) => Some(&**mr),
             },
-            self.imp.aes,
-            self.imp.hkdf,
+            &*self.imp.aes,
+            &*self.imp.hkdf,
             &root_kek,
             encrypted_keyblob,
             hidden,
@@ -453,10 +496,9 @@ impl<'a> KeyMintTa<'a> {
         hmac_op.update(keyblob)?;
         let tag = hmac_op.finish()?;
 
-        Ok(KeyId(
-            tag.try_into()
-                .map_err(|_e| km_err!(UnknownError, "wrong size output from HMAC-SHA256"))?,
-        ))
+        Ok(KeyId(tag.try_into().map_err(|_e| {
+            km_err!(SecureHwCommunicationFailed, "wrong size output from HMAC-SHA256")
+        })?))
     }
 
     /// Increment the use count for the given key ID, failing if `max_uses` is reached.
@@ -526,7 +568,7 @@ impl<'a> KeyMintTa<'a> {
             self.boot_info = Some(boot_info);
             self.rot_data =
                 Some(rot_info.into_vec().map_err(|e| {
-                    km_err!(UnknownError, "failed to encode root-of-trust: {:?}", e)
+                    km_err!(EncodingError, "failed to encode root-of-trust: {:?}", e)
                 })?);
         }
         Ok(())
@@ -550,6 +592,18 @@ impl<'a> KeyMintTa<'a> {
                 self.hal_info, hal_info
             );
         }
+    }
+
+    /// Configure the version of the HAL that this TA should act as.
+    pub fn set_hal_version(&mut self, aidl_version: u32) -> Result<(), Error> {
+        self.aidl_version = match aidl_version {
+            100 => KeyMintHalVersion::V1,
+            200 => KeyMintHalVersion::V2,
+            300 => KeyMintHalVersion::V3,
+            _ => return Err(km_err!(InvalidArgument, "unsupported HAL version {}", aidl_version)),
+        };
+        info!("Set aidl_version to {:?}", self.aidl_version);
+        Ok(())
     }
 
     /// Configure attestation IDs externally.
@@ -594,10 +648,10 @@ impl<'a> KeyMintTa<'a> {
 
     /// Process a single serialized request, returning a serialized response.
     pub fn process(&mut self, req_data: &[u8]) -> Vec<u8> {
-        let rsp = match PerformOpReq::from_slice(req_data) {
+        let (req_code, rsp) = match PerformOpReq::from_slice(req_data) {
             Ok(req) => {
-                debug!("-> TA: received request {:?}", req);
-                self.process_req(req)
+                trace!("-> TA: received request {:?}", req.code());
+                (Some(req.code()), self.process_req(req))
             }
             Err(e) => {
                 error!("failed to decode CBOR request: {:?}", e);
@@ -605,10 +659,10 @@ impl<'a> KeyMintTa<'a> {
                 // for the `IRemotelyProvisionedComponent` or for one of the other HALs, so we don't
                 // know what numbering space the error codes are expected to be in.  Assume the
                 // shared KeyMint `ErrorCode` space.
-                error_rsp(ErrorCode::UnknownError as i32)
+                (None, error_rsp(ErrorCode::EncodingError as i32))
             }
         };
-        debug!("<- TA: send response {:?}", rsp);
+        trace!("<- TA: send response {:?} rc {}", req_code, rsp.error_code);
         match rsp.into_vec() {
             Ok(rsp_data) => rsp_data,
             Err(e) => {
@@ -655,6 +709,10 @@ impl<'a> KeyMintTa<'a> {
                 self.set_attestation_ids(req.ids);
                 op_ok_rsp(PerformOpRsp::SetAttestationIds(SetAttestationIdsResponse {}))
             }
+            PerformOpReq::SetHalVersion(req) => match self.set_hal_version(req.aidl_version) {
+                Ok(_) => op_ok_rsp(PerformOpRsp::SetHalVersion(SetHalVersionResponse {})),
+                Err(e) => op_error_rsp(SetHalVersionRequest::CODE, e),
+            },
 
             // ISharedSecret messages.
             PerformOpReq::SharedSecretGetSharedSecretParameters(_req) => {
@@ -759,14 +817,6 @@ impl<'a> KeyMintTa<'a> {
                 match self.begin_operation(req.purpose, &req.key_blob, req.params, req.auth_token) {
                     Ok(ret) => op_ok_rsp(PerformOpRsp::DeviceBegin(BeginResponse { ret })),
                     Err(e) => op_error_rsp(BeginRequest::CODE, e),
-                }
-            }
-            PerformOpReq::DeviceDeviceLocked(req) => {
-                match self.device_locked(req.password_only, req.timestamp_token) {
-                    Ok(_ret) => {
-                        op_ok_rsp(PerformOpRsp::DeviceDeviceLocked(DeviceLockedResponse {}))
-                    }
-                    Err(e) => op_error_rsp(DeviceLockedRequest::CODE, e),
                 }
             }
             PerformOpReq::DeviceEarlyBootEnded(_req) => match self.early_boot_ended() {
@@ -907,38 +957,6 @@ impl<'a> KeyMintTa<'a> {
         Ok(())
     }
 
-    fn device_locked(
-        &mut self,
-        password_only: bool,
-        timestamp_token: Option<TimeStampToken>,
-    ) -> Result<(), Error> {
-        info!(
-            "device locked, password-required={}, timestamp={:?}",
-            password_only, timestamp_token
-        );
-
-        let now = if let Some(clock) = &self.imp.clock {
-            clock.now().into()
-        } else if let Some(token) = timestamp_token {
-            // Note that any `challenge` value in the `TimeStampToken` cannot be checked, because
-            // there is nothing to check it against.
-            let mac_input = clock::timestamp_token_mac_input(&token)?;
-            if !self.verify_device_hmac(&mac_input, &token.mac)? {
-                return Err(km_err!(InvalidArgument, "timestamp MAC not verified"));
-            }
-            token.timestamp
-        } else {
-            return Err(km_err!(InvalidArgument, "no clock and no external timestamp provided!"));
-        };
-
-        *self.device_locked.borrow_mut() = if password_only {
-            LockState::PasswordLockedSince(now)
-        } else {
-            LockState::LockedSince(now)
-        };
-        Ok(())
-    }
-
     fn get_hardware_info(&self) -> Result<KeyMintHardwareInfo, Error> {
         Ok(KeyMintHardwareInfo {
             version_number: self.hw_info.version_number,
@@ -980,7 +998,7 @@ impl<'a> KeyMintTa<'a> {
 
     fn delete_all_keys(&mut self) -> Result<(), Error> {
         if let Some(sdd_mgr) = &mut self.dev.sdd_mgr {
-            error!("secure deleting all keys! device unlikely to survive reboot!");
+            error!("secure deleting all keys -- device likely to need factory reset!");
             sdd_mgr.delete_all();
         }
         Ok(())
@@ -989,6 +1007,8 @@ impl<'a> KeyMintTa<'a> {
     fn destroy_attestation_ids(&mut self) -> Result<(), Error> {
         match self.dev.attest_ids.as_mut() {
             Some(attest_ids) => {
+                // Drop any cached copies too.
+                *self.attestation_id_info.borrow_mut() = None;
                 error!("destroying all device attestation IDs!");
                 attest_ids.destroy_all()
             }
@@ -1012,10 +1032,9 @@ impl<'a> KeyMintTa<'a> {
             return Err(km_err!(Unimplemented, "root-of-trust retrieval not for StrongBox"));
         }
         let payload = self
-            .boot_info()?
-            .clone()
+            .boot_info_hashed_key()?
             .to_tagged_vec()
-            .map_err(|_e| km_err!(UnknownError, "Failed to CBOR-encode RootOfTrust"))?;
+            .map_err(|_e| km_err!(EncodingError, "Failed to CBOR-encode RootOfTrust"))?;
 
         let mac0 = coset::CoseMac0Builder::new()
             .protected(
@@ -1025,7 +1044,7 @@ impl<'a> KeyMintTa<'a> {
             .try_create_tag(challenge, |data| self.device_hmac(data))?
             .build();
         mac0.to_tagged_vec()
-            .map_err(|_e| km_err!(UnknownError, "Failed to CBOR-encode RootOfTrust"))
+            .map_err(|_e| km_err!(EncodingError, "Failed to CBOR-encode RootOfTrust"))
     }
 
     fn send_root_of_trust(&mut self, root_of_trust: &[u8]) -> Result<(), Error> {
@@ -1057,7 +1076,7 @@ impl<'a> KeyMintTa<'a> {
     }
 
     fn convert_storage_key_to_ephemeral(&self, keyblob: &[u8]) -> Result<Vec<u8>, Error> {
-        if let Some(sk_wrapper) = self.dev.sk_wrapper {
+        if let Some(sk_wrapper) = &self.dev.sk_wrapper {
             // Parse and decrypt the keyblob. Note that there is no way to provide extra hidden
             // params on the API.
             let (keyblob, _) = self.keyblob_parse_decrypt(keyblob, &[])?;
@@ -1097,7 +1116,7 @@ impl<'a> KeyMintTa<'a> {
     /// Generate an HMAC-SHA256 value over the data using the device's HMAC key (if available).
     fn device_hmac(&self, data: &[u8]) -> Result<Vec<u8>, Error> {
         match &self.device_hmac {
-            Some(traitobj) => traitobj.hmac(self.imp.hmac, data),
+            Some(traitobj) => traitobj.hmac(&*self.imp.hmac, data),
             None => {
                 error!("HMAC requested but no key available!");
                 Err(km_err!(HardwareNotYetAvailable, "HMAC key not agreed"))
@@ -1148,7 +1167,7 @@ impl<'a> KeyMintTa<'a> {
             }
         }
         Err(km_err!(
-            UnknownError,
+            InvalidArgument,
             "no characteristics at our security level {:?}",
             self.hw_info.security_level
         ))
@@ -1168,7 +1187,7 @@ fn error_rsp(error_code: i32) -> PerformOpResponse {
 
 /// Create a response structure with the given error.
 fn op_error_rsp(op: KeyMintOperation, err: Error) -> PerformOpResponse {
-    error!("failing {:?} request with error {:?}", op, err);
+    warn!("failing {:?} request with error {:?}", op, err);
     if kmr_wire::is_rpc_operation(op) {
         // The IRemotelyProvisionedComponent HAL uses a different error space than the
         // other HALs.
@@ -1178,22 +1197,16 @@ fn op_error_rsp(op: KeyMintOperation, err: Error) -> PerformOpResponse {
                 error!("encountered non-RKP error on RKP method! {:?}", err);
                 rpc::ErrorCode::Failed
             }
-            Error::Rpc(e, err_msg) => {
-                error!("Returning error code: {:?} in the response due to: {}", e, err_msg);
-                e
-            }
+            Error::Rpc(e, _) => e,
         };
         error_rsp(rpc_err as i32)
     } else {
         let hal_err = match err {
             Error::Cbor(_) | Error::Der(_) => ErrorCode::InvalidArgument,
-            Error::Hal(e, err_msg) => {
-                error!("Returning error code: {:?} in the response due to: {}", e, err_msg);
-                e
-            }
+            Error::Hal(e, _) => e,
             Error::Rpc(_, _) => {
                 error!("encountered RKP error on non-RKP method! {:?}", err);
-                ErrorCode::UnknownError
+                ErrorCode::InvalidArgument
             }
             Error::Alloc(_) => ErrorCode::MemoryAllocationFailed,
         };

@@ -1,3 +1,17 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! KeyMint HAL device implementation.
 
 use crate::binder;
@@ -7,6 +21,7 @@ use crate::hal::{
 };
 use crate::{ChannelHalService, SerializedChannel};
 use kmr_wire::{keymint::KeyParam, AsCborValue, *};
+use log::warn;
 use std::ffi::CString;
 use std::{
     ops::DerefMut,
@@ -214,14 +229,15 @@ impl<T: SerializedChannel> keymint::IKeyMintDevice::IKeyMintDevice for Device<T>
     }
     fn deviceLocked(
         &self,
-        passwordOnly: bool,
-        timestampToken: Option<&TimeStampToken>,
+        _passwordOnly: bool,
+        _timestampToken: Option<&TimeStampToken>,
     ) -> binder::Result<()> {
-        let _rsp: DeviceLockedResponse = self.execute(DeviceLockedRequest {
-            password_only: passwordOnly,
-            timestamp_token: timestampToken.map(|t| t.clone().innto()),
-        })?;
-        Ok(())
+        // This method is deprecated and unused, so just fail with error UNIMPLEMENTED.
+        warn!("Deprecated method devicedLocked() was called");
+        Err(binder::Status::new_service_specific_error(
+            keymint::ErrorCode::ErrorCode::UNIMPLEMENTED.0,
+            Some(&CString::new("Deprecated method deviceLocked() is not implemented").unwrap()),
+        ))
     }
     fn earlyBootEnded(&self) -> binder::Result<()> {
         let _rsp: EarlyBootEndedResponse = self.execute(EarlyBootEndedRequest {})?;
@@ -247,16 +263,19 @@ impl<T: SerializedChannel> keymint::IKeyMintDevice::IKeyMintDevice for Device<T>
         })?;
         Ok(rsp.ret.innto())
     }
+    #[cfg(feature = "hal_v2")]
     fn getRootOfTrustChallenge(&self) -> binder::Result<[u8; 16]> {
         let rsp: GetRootOfTrustChallengeResponse =
             self.execute(GetRootOfTrustChallengeRequest {})?;
         Ok(rsp.ret)
     }
+    #[cfg(feature = "hal_v2")]
     fn getRootOfTrust(&self, challenge: &[u8; 16]) -> binder::Result<Vec<u8>> {
         let rsp: GetRootOfTrustResponse =
             self.execute(GetRootOfTrustRequest { challenge: *challenge })?;
         Ok(rsp.ret)
     }
+    #[cfg(feature = "hal_v2")]
     fn sendRootOfTrust(&self, root_of_trust: &[u8]) -> binder::Result<()> {
         let _rsp: SendRootOfTrustResponse =
             self.execute(SendRootOfTrustRequest { root_of_trust: root_of_trust.to_vec() })?;

@@ -24,5 +24,11 @@ path = "fuzz_targets/message.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "legacy_message"
+path = "fuzz_targets/legacy_message.rs"
+test = false
+doc = false
+
 [patch.crates-io]
 kmr-derive = { path = "../../derive" }
