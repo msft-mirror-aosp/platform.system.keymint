@@ -35,7 +35,8 @@ pub(crate) fn map_openssl_err(err: &openssl::error::Error) -> ErrorCode {
         _ => {}
     }
 
-    match ffi::ERR_GET_LIB(code) as u32 {
+    // SAFETY: `ERR_GET_LIB` is safe for all inputs.
+    match unsafe { ffi::ERR_GET_LIB(code) as u32 } {
         ffi::ERR_LIB_USER => ErrorCode::try_from(reason).unwrap_or(ErrorCode::BoringSslError),
         ffi::ERR_LIB_EVP => translate_evp_error(reason),
         ffi::ERR_LIB_ASN1 => translate_asn1_error(reason),
