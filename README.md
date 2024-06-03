@@ -2,12 +2,12 @@
 
 This repository holds a reference implementation of the Android
 [KeyMint
-HAL](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/keymint/aidl/android/hardware/security/keymint/IKeyMintDevice.aidl?q=IKeyMintDevice.aidl),
+HAL](https://cs.android.com/android/platform/superproject/main/+/main:hardware/interfaces/security/keymint/aidl/android/hardware/security/keymint/IKeyMintDevice.aidl),
 including closely related HAL interfaces:
 
-- [`IRemotelyProvisionedComponent`](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/rkp/aidl/android/hardware/security/keymint/IRemotelyProvisionedComponent.aidl)
-- [`ISharedSecret`](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/sharedsecret/aidl/android/hardware/security/sharedsecret/ISharedSecret.aidl)
-- [`ISecureClock`](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/secureclock/aidl/android/hardware/security/secureclock/ISecureClock.aidl)
+- [`IRemotelyProvisionedComponent`](https://cs.android.com/android/platform/superproject/main/+/main:hardware/interfaces/security/rkp/aidl/android/hardware/security/keymint/IRemotelyProvisionedComponent.aidl)
+- [`ISharedSecret`](https://cs.android.com/android/platform/superproject/main/+/main:hardware/interfaces/security/sharedsecret/aidl/android/hardware/security/sharedsecret/ISharedSecret.aidl)
+- [`ISecureClock`](https://cs.android.com/android/platform/superproject/main/+/main:hardware/interfaces/security/secureclock/aidl/android/hardware/security/secureclock/ISecureClock.aidl)
 
 ## Repository Structure
 
@@ -103,7 +103,7 @@ requests to the TA as request/response pairs.
 - [ ] Populate userspace environment information at start of day, using `kmr_hal::send_hal_info()`.
 
 The Cuttlefish implementation of the [KeyMint/Rust HAL
-service](https://cs.android.com/android/platform/superproject/+/master:device/google/cuttlefish/guest/hals/keymint/rust/src/keymint_hal_main.rs)
+service](https://cs.android.com/android/platform/superproject/main/+/main:device/google/cuttlefish/guest/hals/keymint/rust/src/keymint_hal_main.rs)
 provides an example of all of the above.
 
 ### TA Driver
@@ -130,7 +130,7 @@ program that:
     - [ ] Trigger call to `kmr_ta::KeyMintTa::set_boot_info` on receipt of boot info.
 
 The Cuttlefish implementation of the [KeyMint/Rust
-TA](https://cs.android.com/android/platform/superproject/+/master:device/google/cuttlefish/host/commands/secure_env_rust/secure_env.rs)
+TA](https://cs.android.com/android/platform/superproject/main/+/main:device/google/cuttlefish/host/commands/secure_env/rust/lib.rs)
 provides an example of all of the above.
 
 ### Bootloader
@@ -176,7 +176,7 @@ in [`kmr_hal::device`](hal/src/device.rs).
 **Checklist:**
 
 - [ ] Root key retrieval implementation.
-- [ ] Attestation key / chain retrieval implementation.
+- [ ] Attestation key / chain retrieval implementation (optional).
 - [ ] Attestation device ID retrieval implementation.
 - [ ] Retrieval of BCC and DICE artefacts.
 - [ ] Secure storage implementation (optional).

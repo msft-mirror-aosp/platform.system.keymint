@@ -38,7 +38,7 @@ pub struct Implementation {
     pub keys: Box<dyn RetrieveKeyMaterial>,
 
     /// Retrieval of attestation certificate signing information.
-    pub sign_info: Box<dyn RetrieveCertSigningInfo>,
+    pub sign_info: Option<Box<dyn RetrieveCertSigningInfo>>,
 
     /// Retrieval of attestation ID information.
     pub attest_ids: Option<Box<dyn RetrieveAttestationIds>>,

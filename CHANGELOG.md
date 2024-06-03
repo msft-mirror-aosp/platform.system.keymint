@@ -4,6 +4,9 @@ This file attempts to list significant changes to the Rust reference implementat
 where "significant" means things that are likely to affect vendors whose KeyMint implementations are
 based on this codebase.
 
+- The `sign_info` field in `kmr_ta::device::Implementation` is now an `Option`, reflecting that
+  batch attestation is now optional (devices can be RKP-only, as indicated by the
+  `remote_provisioning.tee.rkp_only` system property).
 - The `BootInfo` structure passed to `kmr_ta::KeyMintTa::set_boot_info()` method did not make clear
   what the contents of the `verified_boot_key` field should be: the key itself, or a SHA-256 hash of
   the key.  The KeyMint implementation has been modified to cope with either, using a SHA-256 hash

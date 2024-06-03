@@ -600,14 +600,14 @@ pub fn test_signing_cert_parse<T: kmr_ta::device::RetrieveCertSigningInfo>(
                 } else {
                     // Issuer of cert should be the subject of the previous cert.
                     assert_eq!(
-                        hex::encode(prev_subject_data),
+                        hex::encode(&prev_subject_data),
                         hex::encode(&issuer_data),
                         "cert {} has issuer != prev_cert.subject for {:?}",
                         idx,
                         info
                     )
                 }
-                prev_subject_data = subject_data.clone();
+                prev_subject_data.clone_from(&subject_data);
             }
         }
     }
