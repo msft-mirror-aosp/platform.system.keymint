@@ -45,7 +45,7 @@ use log::{error, info, trace, warn};
 mod cert;
 mod clock;
 pub mod device;
-mod keys;
+pub mod keys;
 mod operation;
 pub mod rkp;
 mod secret;
