@@ -1,3 +1,17 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Utility program to parse a legacy authenticated keyblob.
 
 // Explicitly include alloc because macros from `kmr_common` assume it.
@@ -88,18 +102,9 @@ fn process(filename: &str, hex: bool) {
     let algo_val = get_tag_value!(&combined, Algorithm, ErrorCode::InvalidArgument)
         .expect("characteristics missing algorithm");
 
-    // To disinguish between Ed25519 and X25519, need to examine the purpose for the key.
-    // Look for AgreeKey as it cannot be combined with other purposes.
-    let primary_purpose = combined
-        .iter()
-        .filter_map(
-            |param| if let KeyParam::Purpose(purpose) = param { Some(*purpose) } else { None },
-        )
-        .next();
-
     let raw_key = keyblob.key_material.clone();
     let key_material = match algo_val {
-        Algorithm::Aes => KeyMaterial::Aes(aes::Key::new(keyblob.key_material).unwrap().into()),
+        Algorithm::Aes => KeyMaterial::Aes(aes::Key::new(raw_key).unwrap().into()),
         Algorithm::TripleDes => KeyMaterial::TripleDes(
             des::Key(raw_key.try_into().expect("Incorrect length for 3DES key")).into(),
         ),
@@ -128,20 +133,7 @@ fn process(filename: &str, hex: bool) {
                     ec::Key::P521(ec::NistKey(raw_key)).into(),
                 ),
                 EcCurve::Curve25519 => {
-                    let key = raw_key.try_into().expect("curve25519 key of wrong size");
-                    if primary_purpose == Some(keymint::KeyPurpose::AgreeKey) {
-                        KeyMaterial::Ec(
-                            EcCurve::Curve25519,
-                            CurveType::Xdh,
-                            ec::Key::X25519(ec::X25519Key(key)).into(),
-                        )
-                    } else {
-                        KeyMaterial::Ec(
-                            EcCurve::Curve25519,
-                            CurveType::EdDsa,
-                            ec::Key::Ed25519(ec::Ed25519Key(key)).into(),
-                        )
-                    }
+                    ec::import_pkcs8_key(&raw_key).expect("curve25519 key in PKCS#8 format")
                 }
             }
         }

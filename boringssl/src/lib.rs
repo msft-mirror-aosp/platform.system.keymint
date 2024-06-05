@@ -1,5 +1,18 @@
-//! Implementations of [`kmr_common::crypto`] traits based on BoringSSL.
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
+//! Implementations of [`kmr_common::crypto`] traits based on BoringSSL.
 #![no_std]
 
 extern crate alloc;
@@ -23,6 +36,7 @@ pub mod eq;
 pub mod hmac;
 pub mod rng;
 pub mod rsa;
+pub mod sha256;
 
 #[cfg(soong)]
 mod err;
@@ -32,12 +46,14 @@ use err::*;
 #[cfg(test)]
 mod tests;
 
+mod types;
+
 /// Map an OpenSSL `ErrorStack` into a KeyMint [`ErrorCode`] value.
 pub(crate) fn map_openssl_errstack(errs: &openssl::error::ErrorStack) -> ErrorCode {
     let errors = errs.errors();
     if errors.is_empty() {
         error!("BoringSSL error requested but none available!");
-        return ErrorCode::UnknownError;
+        return ErrorCode::BoringSslError;
     }
     let err = &errors[0]; // safe: length checked above
     map_openssl_err(err)
@@ -46,7 +62,7 @@ pub(crate) fn map_openssl_errstack(errs: &openssl::error::ErrorStack) -> ErrorCo
 /// Stub function for mapping an OpenSSL `ErrorStack` into a KeyMint [`ErrorCode`] value.
 #[cfg(not(soong))]
 fn map_openssl_err(_err: &openssl::error::Error) -> ErrorCode {
-    ErrorCode::UnknownError
+    ErrorCode::BoringSslError
 }
 
 /// Macro to auto-generate error mapping around invocations of `openssl` methods.

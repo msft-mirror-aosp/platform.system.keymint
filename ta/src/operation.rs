@@ -1,6 +1,19 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! TA functionality related to in-progress crypto operations.
 
-use crate::LockState;
 use alloc::{boxed::Box, vec::Vec};
 use kmr_common::{
     crypto,
@@ -9,8 +22,7 @@ use kmr_common::{
     FallibleAllocExt,
 };
 use kmr_wire::{
-    keymint::{ErrorCode, HardwareAuthToken, HardwareAuthenticatorType, KeyParam, KeyPurpose},
-    secureclock,
+    keymint::{ErrorCode, HardwareAuthToken, KeyParam, KeyPurpose},
     secureclock::{TimeStampToken, Timestamp},
     InternalBeginResult,
 };
@@ -146,11 +158,7 @@ impl AuthInfo {
     }
 }
 
-/// Newtype holding a [`keymint::HardwareAuthToken`] that has already been authenticated.
-#[derive(Debug, Clone)]
-struct HardwareAuthenticatedToken(pub HardwareAuthToken);
-
-impl<'a> crate::KeyMintTa<'a> {
+impl crate::KeyMintTa {
     pub(crate) fn begin_operation(
         &mut self,
         purpose: KeyPurpose,
@@ -450,8 +458,9 @@ impl<'a> crate::KeyMintTa<'a> {
         } else {
             false
         };
+        let tup_available = self.dev.tup.available();
         self.with_authed_operation(op_handle, auth_token, timestamp_token, |op| {
-            if check_presence && !self.dev.tup.available() {
+            if check_presence && !tup_available {
                 return Err(km_err!(
                     ProofOfPresenceRequired,
                     "trusted proof of presence required but not available"
@@ -660,7 +669,7 @@ impl<'a> crate::KeyMintTa<'a> {
         now: Option<Timestamp>,
         timeout_secs: Option<u32>,
         challenge: Option<i64>,
-    ) -> Result<HardwareAuthenticatedToken, Error> {
+    ) -> Result<(), Error> {
         // Common check: confirm the HMAC tag in the token is valid.
         let mac_input = crate::hardware_auth_token_mac_input(&auth_token)?;
         if !self.verify_device_hmac(&mac_input, &auth_token.mac)? {
@@ -707,34 +716,7 @@ impl<'a> crate::KeyMintTa<'a> {
                 return Err(km_err!(KeyUserNotAuthenticated, "challenge mismatch"));
             }
         }
-        let auth_token = HardwareAuthenticatedToken(auth_token);
-
-        // The accompanying auth token may trigger an unlock, regardless of whether the operation
-        // succeeds.
-        self.maybe_unlock(&auth_token);
-        Ok(auth_token)
-    }
-
-    /// Update the device unlock state based on a possible hardware auth token.
-    fn maybe_unlock(&self, auth_token: &HardwareAuthenticatedToken) {
-        // This auth token may or may not indicate an unlock. It's not an error if
-        // it doesn't, though.
-        let (locked, lock_time, need_password) = match *self.device_locked.borrow() {
-            LockState::Unlocked => (false, secureclock::Timestamp { milliseconds: 0 }, false),
-            LockState::LockedSince(t) => (true, t, false),
-            LockState::PasswordLockedSince(t) => (true, t, true),
-        };
-
-        if locked
-            && auth_token.0.timestamp.milliseconds >= lock_time.milliseconds
-            && (!need_password
-                || ((auth_token.0.authenticator_type as u32)
-                    & (HardwareAuthenticatorType::Password as u32)
-                    != 0))
-        {
-            info!("auth token indicates device unlocked");
-            *self.device_locked.borrow_mut() = LockState::Unlocked;
-        }
+        Ok(())
     }
 
     /// Verify that an optional confirmation token matches the provided `data`.
@@ -748,7 +730,7 @@ impl<'a> crate::KeyMintTa<'a> {
                 ));
             }
             if self.verify_device_hmac(data, token).map_err(|e| {
-                km_err!(UnknownError, "failed to perform HMAC on confirmation token: {:?}", e)
+                km_err!(VerificationFailed, "failed to perform HMAC on confirmation token: {:?}", e)
             })? {
                 Ok(())
             } else {
@@ -850,7 +832,7 @@ impl<'a> crate::KeyMintTa<'a> {
             if let Some(timeout_secs) = auth_info.timeout_secs {
                 if self.imp.clock.is_some() {
                     return Err(km_err!(
-                        UnknownError,
+                        InvalidAuthorizationTimeout,
                         "attempt to check auth timeout after begin() on device with clock!"
                     ));
                 }

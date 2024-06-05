@@ -1,3 +1,17 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Traits representing access to device-specific information and functionality.
 
 use crate::coset::{iana, AsCborValue, CoseSign1Builder, HeaderBuilder};
@@ -19,36 +33,36 @@ pub const RPC_HMAC_KEY_CONTEXT: &[u8] = b"Key to MAC public keys";
 pub const RPC_HMAC_KEY_LEN: usize = 32;
 
 /// Combined collection of trait implementations that must be provided.
-pub struct Implementation<'a> {
+pub struct Implementation {
     /// Retrieval of root key material.
-    pub keys: &'a dyn RetrieveKeyMaterial,
+    pub keys: Box<dyn RetrieveKeyMaterial>,
 
     /// Retrieval of attestation certificate signing information.
-    pub sign_info: &'a dyn RetrieveCertSigningInfo,
+    pub sign_info: Option<Box<dyn RetrieveCertSigningInfo>>,
 
     /// Retrieval of attestation ID information.
-    pub attest_ids: Option<&'a mut dyn RetrieveAttestationIds>,
+    pub attest_ids: Option<Box<dyn RetrieveAttestationIds>>,
 
     /// Secure deletion secret manager.  If not available, rollback-resistant
     /// keys will not be supported.
-    pub sdd_mgr: Option<&'a mut dyn keyblob::SecureDeletionSecretManager>,
+    pub sdd_mgr: Option<Box<dyn keyblob::SecureDeletionSecretManager>>,
 
     /// Retrieval of bootloader status.
-    pub bootloader: &'a dyn BootloaderStatus,
+    pub bootloader: Box<dyn BootloaderStatus>,
 
     /// Storage key wrapping. If not available `convertStorageKeyToEphemeral()` will not be
     /// supported
-    pub sk_wrapper: Option<&'a dyn StorageKeyWrapper>,
+    pub sk_wrapper: Option<Box<dyn StorageKeyWrapper>>,
 
     /// Trusted user presence indicator.
-    pub tup: &'a dyn TrustedUserPresence,
+    pub tup: Box<dyn TrustedUserPresence>,
 
     /// Legacy key conversion handling.
-    pub legacy_key: Option<&'a mut dyn keyblob::LegacyKeyHandler>,
+    pub legacy_key: Option<Box<dyn keyblob::LegacyKeyHandler>>,
 
     /// Retrieval of artifacts related to the device implementation of IRemotelyProvisionedComponent
     /// (IRPC) HAL.
-    pub rpc: &'a dyn RetrieveRpcArtifacts,
+    pub rpc: Box<dyn RetrieveRpcArtifacts>,
 }
 
 /// Functionality related to retrieval of device-specific key material, and its subsequent use.
@@ -114,13 +128,16 @@ pub enum SigningKey {
 /// Indication of preferred attestation signing algorithm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SigningAlgorithm {
+    /// Prefer to sign with an elliptic curve key.
     Ec,
+    /// Prefer to sign with an RSA key.
     Rsa,
 }
 
 /// Indication of required signing key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SigningKeyType {
+    /// Indicates the preferred type of signing key.
     pub which: SigningKey,
     /// Indicates what is going to be signed, to allow implementations to (optionally) use EC / RSA
     /// signing keys for EC / RSA keys respectively.
@@ -167,10 +184,9 @@ pub trait BootloaderStatus {
 /// implementation of IRemotelyProvisionedComponent (IRPC) HAL.
 /// Note: The devices only supporting IRPC V3+ may ignore the optional IRPC V2 specific types in
 /// the method signatures.
-/// TODO (b/258069484): Add smoke tests to this device trait.
 pub trait RetrieveRpcArtifacts {
-    // Retrieve secret bytes (of the given output length) derived from a hardware backed key.
-    // For a given context, the output is deterministic.
+    /// Retrieve secret bytes (of the given output length) derived from a hardware backed key.
+    /// For a given context, the output is deterministic.
     fn derive_bytes_from_hbk(
         &self,
         hkdf: &dyn crypto::Hkdf,
@@ -178,7 +194,7 @@ pub trait RetrieveRpcArtifacts {
         output_len: usize,
     ) -> Result<Vec<u8>, Error>;
 
-    // Compute HMAC_SHA256 over the given input using a key derived from hardware.
+    /// Compute HMAC_SHA256 over the given input using a key derived from hardware.
     fn compute_hmac_sha256(
         &self,
         hmac: &dyn crypto::Hmac,
@@ -189,16 +205,23 @@ pub trait RetrieveRpcArtifacts {
         crypto::hmac_sha256(hmac, &secret, input)
     }
 
-    // Retrieve the information about the DICE chain belonging to the IRPC HAL implementation.
+    /// Retrieve the information about the DICE chain belonging to the IRPC HAL implementation.
     fn get_dice_info(&self, test_mode: rpc::TestMode) -> Result<DiceInfo, Error>;
 
-    // Sign the input data with the CDI leaf private key of the IRPC HAL implementation. In IRPC V2,
-    // the `data` to be signed is the [`SignedMac_structure`] in ProtectedData.aidl, when signing
-    // the ephemeral MAC key used to authenticate the public keys. In IRPC V3, the `data` to be
-    // signed is the [`SignedDataSigStruct`].
-    // If a particular implementation would like to return the signature in a COSE_Sign1 message,
-    // they can mark this unimplemented and override the default implementation in the
-    // `sign_data_in_cose_sign1` method below.
+    /// Sign the input data with the CDI leaf private key of the IRPC HAL implementation. In IRPC V2,
+    /// the `data` to be signed is the [`SignedMac_structure`] in ProtectedData.aidl, when signing
+    /// the ephemeral MAC key used to authenticate the public keys. In IRPC V3, the `data` to be
+    /// signed is the [`SignedDataSigStruct`].
+    /// If a particular implementation would like to return the signature in a COSE_Sign1 message,
+    /// they can mark this unimplemented and override the default implementation in the
+    /// `sign_data_in_cose_sign1` method below.
+    ///
+    /// The signature produced by this method should be in a format suitable for COSE structures:
+    /// - Ed25519 signatures are encoded as-is.
+    /// - NIST signatures are encoded as (r||s), with each value left-padded with zeroes to
+    ///   the coordinate length.  Note that this is a *different* format than is emitted by
+    ///   the `kmr_common::crypto::Ec` trait.
+    /// (The `kmr_common::crypto::ec::to_cose_signature()` function can help with this.)
     fn sign_data(
         &self,
         ec: &dyn crypto::Ec,
@@ -206,9 +229,9 @@ pub trait RetrieveRpcArtifacts {
         rpc_v2: Option<RpcV2Req>,
     ) -> Result<Vec<u8>, Error>;
 
-    // Sign the payload and return a COSE_Sign1 message. In IRPC V2, the `payload` is the MAC Key.
-    // In IRPC V3, the `payload` is the `Data` that the `SignedData` is parameterized with (i.e. a
-    // CBOR array containing `challenge` and `CsrPayload`).
+    /// Sign the payload and return a COSE_Sign1 message. In IRPC V2, the `payload` is the MAC Key.
+    /// In IRPC V3, the `payload` is the `Data` that the `SignedData` is parameterized with (i.e. a
+    /// CBOR array containing `challenge` and `CsrPayload`).
     fn sign_data_in_cose_sign1(
         &self,
         ec: &dyn crypto::Ec,
@@ -237,52 +260,62 @@ pub trait RetrieveRpcArtifacts {
 /// Information about the DICE chain belonging to the implementation of the IRPC HAL.
 #[derive(Clone)]
 pub struct DiceInfo {
+    /// Public dice artifacts.
     pub pub_dice_artifacts: PubDiceArtifacts,
+    /// Algorithm used for signing CSRs.
     pub signing_algorithm: CsrSigningAlgorithm,
-    // This is only relevant for IRPC HAL V2 when `test_mode` is true. This is ignored in all other
-    // cases. The optional test CDI private key may be set here, if the device implementers
-    // do not want to cache the test CDI private key across the calls to the `get_dice_info` and
-    //`sign_data` methods when creating the CSR.
+    /// Test-mode CDI private key.
+    ///
+    /// This is only relevant for IRPC HAL V2 when `test_mode` is true. This is ignored in all other
+    /// cases. The optional test CDI private key may be set here, if the device implementers
+    /// do not want to cache the test CDI private key across the calls to the `get_dice_info` and
+    ///`sign_data` methods when creating the CSR.
     pub rpc_v2_test_cdi_priv: Option<RpcV2TestCDIPriv>,
 }
 
 /// Algorithm used to sign with the CDI leaf private key.
 #[derive(Clone, Copy, Debug)]
 pub enum CsrSigningAlgorithm {
+    /// Sign with P-256 EC key.
     ES256,
+    /// Sign with P-384 EC key.
     ES384,
+    /// Sign with Ed25519 key.
     EdDSA,
 }
 
+/// Public DICE artifacts.
 #[derive(Clone, Debug)]
 pub struct PubDiceArtifacts {
-    // Certificates for the UDS Pub encoded in CBOR as per [`AdditionalDKSignatures`] structure in
-    // ProtectedData.aidl for IRPC HAL version 2 and as per [`UdsCerts`] structure in IRPC HAL
-    // version 3.
+    /// Certificates for the UDS Pub encoded in CBOR as per [`AdditionalDKSignatures`] structure in
+    /// ProtectedData.aidl for IRPC HAL version 2 and as per [`UdsCerts`] structure in IRPC HAL
+    /// version 3.
     pub uds_certs: Vec<u8>,
-    // UDS Pub and the DICE certificates encoded in CBOR/COSE as per the [`Bcc`] structure
-    // defined in ProtectedData.aidl for IRPC HAL version 2 and as per [`DiceCertChain`] structure
-    // in IRPC HAL version 3.
+    /// UDS Pub and the DICE certificates encoded in CBOR/COSE as per the [`Bcc`] structure
+    /// defined in ProtectedData.aidl for IRPC HAL version 2 and as per [`DiceCertChain`] structure
+    /// in IRPC HAL version 3.
     pub dice_cert_chain: Vec<u8>,
 }
 
-// Enum distinguishing the two modes of operation for IRPC HAL V2, allowing an optional context
-// information to be passed in for the test mode.
+/// Enum distinguishing the two modes of operation for IRPC HAL V2, allowing an optional context
+/// information to be passed in for the test mode.
 pub enum RpcV2Req<'a> {
+    /// IRPC v2 request in production mode.
     Production,
-    // An opaque blob may be passed in for the test mode, if it was returned by the TA in
-    // `RkpV2TestCDIPriv.context` in order to link the two requests: `get_dice_info` and `sign_data`
-    // related to the same CSR.
+    /// An opaque blob may be passed in for the test mode, if it was returned by the TA in
+    /// `RkpV2TestCDIPriv.context` in order to link the two requests: `get_dice_info` and `sign_data`
+    /// related to the same CSR.
     Test(&'a [u8]),
 }
 
-// Struct encapsulating the optional CDI private key and the optional opaque context that may be
-// returned with `DiceInfo` in IRPC V2 test mode.
+/// Struct encapsulating the optional CDI private key and the optional opaque context that may be
+/// returned with `DiceInfo` in IRPC V2 test mode.
 #[derive(Clone)]
 pub struct RpcV2TestCDIPriv {
+    /// Test-mode CDI private key, if available.
     pub test_cdi_priv: Option<OpaqueOr<crypto::ec::Key>>,
-    // An optional opaque blob set by the TA, if the TA wants a mechanism to relate the
-    // two requests: `get_dice_info` and `sign_data` related to the same CSR.
+    /// An optional opaque blob set by the TA, if the TA wants a mechanism to relate the
+    /// two requests: `get_dice_info` and `sign_data` related to the same CSR.
     pub context: Vec<u8>,
 }
 
@@ -313,6 +346,8 @@ pub trait StorageKeyWrapper {
 
 // No-op implementations for the non-optional device traits. These implementations are only
 // intended for convenience during the process of porting the KeyMint code to a new environment.
+
+/// Stub implementation of [`RetrieveKeyMaterial`].
 pub struct NoOpRetrieveKeyMaterial;
 impl RetrieveKeyMaterial for NoOpRetrieveKeyMaterial {
     fn root_kek(&self, _context: &[u8]) -> Result<OpaqueOr<hmac::Key>, Error> {
@@ -324,6 +359,7 @@ impl RetrieveKeyMaterial for NoOpRetrieveKeyMaterial {
     }
 }
 
+/// Stub implementation of [`RetrieveCertSigningInfo`].
 pub struct NoOpRetrieveCertSigningInfo;
 impl RetrieveCertSigningInfo for NoOpRetrieveCertSigningInfo {
     fn signing_key(&self, _key_type: SigningKeyType) -> Result<KeyMaterial, Error> {
@@ -335,6 +371,7 @@ impl RetrieveCertSigningInfo for NoOpRetrieveCertSigningInfo {
     }
 }
 
+/// Stub implementation of [`RetrieveRpcArtifacts`].
 pub struct NoOpRetrieveRpcArtifacts;
 impl RetrieveRpcArtifacts for NoOpRetrieveRpcArtifacts {
     fn derive_bytes_from_hbk(

@@ -1,17 +1,18 @@
 [package]
-name = "kmr-wire-fuzz"
+name = "kmr-ta-fuzz"
 version = "0.0.0"
 authors = ["Automatically generated"]
 publish = false
-edition = "2018"
+edition = "2021"
 
 [package.metadata]
 cargo-fuzz = true
 
 [dependencies]
+der = { version = "^0.7.8", features = ["alloc", "derive"] }
 libfuzzer-sys = "0.4"
 
-[dependencies.kmr-wire]
+[dependencies.kmr-ta]
 path = ".."
 
 # Prevent this from interfering with workspaces
@@ -19,16 +20,13 @@ path = ".."
 members = ["."]
 
 [[bin]]
-name = "message"
-path = "fuzz_targets/message.rs"
+name = "keydescription"
+path = "fuzz_targets/keydescription.rs"
 test = false
 doc = false
-
-[[bin]]
-name = "legacy_message"
-path = "fuzz_targets/legacy_message.rs"
-test = false
-doc = false
+bench = false
 
 [patch.crates-io]
+kmr-common = { path = "../../common" }
 kmr-derive = { path = "../../derive" }
+kmr-wire = { path = "../../wire" }

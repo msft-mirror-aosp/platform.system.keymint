@@ -1,5 +1,22 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Types and macros for communication between HAL and TA
 
+// Allow missing docs in this crate as the types here are generally 1:1 with the HAL
+// interface definitions.
+#![allow(missing_docs)]
 #![no_std]
 extern crate alloc;
 
@@ -26,15 +43,16 @@ pub use types::*;
 #[cfg(test)]
 mod tests;
 
-/// Macro that emits an implementation of `TryFrom<i32>` for an enum type that has
-/// `[derive(N)]` attached to it.
+/// Macro that emits an implementation of `TryFrom<i32>` for an enum type that has `[derive(N)]`
+/// attached to it.  The implementation assumes that `ValueNotRecognized` has a variant with the
+/// same name as the enum.
 #[macro_export]
 macro_rules! try_from_n {
     { $ename:ident } => {
         impl core::convert::TryFrom<i32> for $ename {
             type Error = $crate::ValueNotRecognized;
             fn try_from(value: i32) -> Result<Self, Self::Error> {
-                Self::n(value).ok_or($crate::ValueNotRecognized)
+                Self::n(value).ok_or($crate::ValueNotRecognized::$ename)
             }
         }
     };
@@ -280,7 +298,7 @@ pub fn cbor_type_error<T>(value: &cbor::value::Value, want: &'static str) -> Res
 /// Read a [`cbor::value::Value`] from a byte slice, failing if any extra data remains after the
 /// `Value` has been read.
 pub fn read_to_value(mut slice: &[u8]) -> Result<cbor::value::Value, CborError> {
-    let value = cbor::de::from_reader(&mut slice)?;
+    let value = cbor::de::from_reader_with_recursion_limit(&mut slice, 16)?;
     if slice.is_empty() {
         Ok(value)
     } else {

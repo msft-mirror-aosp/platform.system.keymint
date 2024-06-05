@@ -1,13 +1,27 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Test methods to confirm basic functionality of trait implementations.
 
 use core::convert::TryInto;
 use kmr_common::crypto::{
-    aes, des, hmac, Aes, AesCmac, Ckdf, ConstTimeEq, Des, Hkdf, Hmac, MonotonicClock, Rng,
+    aes, des, hmac, Aes, AesCmac, Ckdf, ConstTimeEq, Des, Hkdf, Hmac, MonotonicClock, Rng, Sha256,
     SymmetricOperation,
 };
 use kmr_common::{keyblob, keyblob::SlotPurpose};
 use kmr_ta::device::{SigningAlgorithm, SigningKey, SigningKeyType};
-use kmr_wire::keymint::Digest;
+use kmr_wire::{keymint::Digest, rpc};
 use std::collections::HashMap;
 use x509_cert::der::{Decode, Encode};
 
@@ -506,6 +520,28 @@ pub fn test_des<D: Des>(des: D) {
     }
 }
 
+/// Test basic SHA-256 functionality.
+pub fn test_sha256<S: Sha256>(sha256: S) {
+    struct TestCase {
+        msg: &'static [u8],
+        want: &'static str,
+    }
+    let tests = vec![
+        TestCase {
+            msg: b"",
+            want: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+        TestCase {
+            msg: b"abc",
+            want: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        },
+    ];
+    for test in tests {
+        let got = sha256.hash(test.msg).unwrap();
+        assert_eq!(hex::encode(got), test.want, "for input {}", hex::encode(test.msg));
+    }
+}
+
 /// Test secure deletion secret management.
 ///
 /// Warning: this test will use slots in the provided manager, and may leak slots on failure.
@@ -551,8 +587,8 @@ pub fn test_signing_cert_parse<T: kmr_ta::device::RetrieveCertSigningInfo>(
                 let cert = x509_cert::Certificate::from_der(&cert.encoded_certificate)
                     .expect("failed to parse cert");
 
-                let subject_data = cert.tbs_certificate.subject.to_vec().unwrap();
-                let issuer_data = cert.tbs_certificate.issuer.to_vec().unwrap();
+                let subject_data = cert.tbs_certificate.subject.to_der().unwrap();
+                let issuer_data = cert.tbs_certificate.issuer.to_der().unwrap();
                 if idx == 0 {
                     // First cert should be self-signed, and so have subject==issuer.
                     assert_eq!(
@@ -564,15 +600,33 @@ pub fn test_signing_cert_parse<T: kmr_ta::device::RetrieveCertSigningInfo>(
                 } else {
                     // Issuer of cert should be the subject of the previous cert.
                     assert_eq!(
-                        hex::encode(prev_subject_data),
+                        hex::encode(&prev_subject_data),
                         hex::encode(&issuer_data),
                         "cert {} has issuer != prev_cert.subject for {:?}",
                         idx,
                         info
                     )
                 }
-                prev_subject_data = subject_data.clone();
+                prev_subject_data.clone_from(&subject_data);
             }
         }
     }
+}
+
+/// Simple smoke test for an `RetrieveRpcArtifacts` trait implementation.
+pub fn test_retrieve_rpc_artifacts<T: kmr_ta::device::RetrieveRpcArtifacts>(
+    rpc: T,
+    hmac: &dyn Hmac,
+    hkdf: &dyn Hkdf,
+) {
+    assert!(rpc.get_dice_info(rpc::TestMode(false)).is_ok());
+
+    let context = b"abcdef";
+    let data1 = rpc.derive_bytes_from_hbk(hkdf, context, 16).expect("failed to derive from HBK");
+    let data2 = rpc.derive_bytes_from_hbk(hkdf, context, 16).expect("failed to derive from HBK");
+    assert_eq!(data1, data2, "derive_bytes_from_hbk() method should be deterministic");
+
+    let data1 = rpc.compute_hmac_sha256(hmac, hkdf, context).expect("failed to perform HMAC");
+    let data2 = rpc.compute_hmac_sha256(hmac, hkdf, context).expect("failed to perform HMAC");
+    assert_eq!(data1, data2, "compute_hmac_sha256() method should be deterministic");
 }

@@ -1,3 +1,17 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Helper functionality for working with tags.
 
 use crate::{
@@ -40,7 +54,9 @@ pub const UNPOLICED_COPYABLE_TAGS: &[Tag] = &[
 /// Indication of whether secure storage is available.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum SecureStorage {
+    /// Device has secure storage.
     Available,
+    /// Device does not have secure storage.
     Unavailable,
 }
 
@@ -277,12 +293,16 @@ pub fn extract_key_import_characteristics(
     key_data: &[u8],
 ) -> Result<(Vec<KeyCharacteristics>, KeyMaterial), Error> {
     let (deduced_params, key_material) = match get_algorithm(params)? {
-        Algorithm::Rsa => check_rsa_import_params(imp.rsa, params, sec_level, key_format, key_data),
-        Algorithm::Ec => check_ec_import_params(imp.ec, params, sec_level, key_format, key_data),
-        Algorithm::Aes => check_aes_import_params(imp.aes, params, sec_level, key_format, key_data),
-        Algorithm::TripleDes => check_3des_import_params(imp.des, params, key_format, key_data),
+        Algorithm::Rsa => {
+            check_rsa_import_params(&*imp.rsa, params, sec_level, key_format, key_data)
+        }
+        Algorithm::Ec => check_ec_import_params(&*imp.ec, params, sec_level, key_format, key_data),
+        Algorithm::Aes => {
+            check_aes_import_params(&*imp.aes, params, sec_level, key_format, key_data)
+        }
+        Algorithm::TripleDes => check_3des_import_params(&*imp.des, params, key_format, key_data),
         Algorithm::Hmac => {
-            check_hmac_import_params(imp.hmac, params, sec_level, key_format, key_data)
+            check_hmac_import_params(&*imp.hmac, params, sec_level, key_format, key_data)
         }
     }?;
     Ok((
@@ -336,10 +356,6 @@ fn extract_key_characteristics(
             chars.try_push(param.clone())?;
         } else if KEYSTORE_ENFORCED_CHARACTERISTICS.contains(&tag) {
             keystore_chars.try_push(param.clone())?;
-        } else if tag == Tag::UnlockedDeviceRequired {
-            // `UnlockedDeviceRequired` is policed by both KeyMint and Keystore, so put it in the
-            // KeyMint security level.
-            chars.try_push(param.clone())?;
         }
     }
 

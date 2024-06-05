@@ -1,18 +1,34 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Generation of certificates and attestation extensions.
 
 use crate::keys::SigningInfo;
-use alloc::{borrow::Cow, boxed::Box, vec::Vec};
+use alloc::{borrow::Cow, vec::Vec};
 use core::time::Duration;
-use der::asn1::{BitStringRef, OctetStringRef, SetOfVec};
+use der::asn1::{BitString, OctetString, OctetStringRef, SetOfVec};
 use der::{
-    asn1::{GeneralizedTime, Null, UIntRef, UtcTime},
+    asn1::{GeneralizedTime, Null, UtcTime},
     oid::AssociatedOid,
     Enumerated, Sequence,
 };
-use der::{Decode, Encode, ErrorKind, Length};
+use der::{Decode, Encode, EncodeValue, ErrorKind, Length};
 use flagset::FlagSet;
 use kmr_common::crypto::KeyMaterial;
-use kmr_common::{crypto, get_tag_value, km_err, tag, try_to_vec, vec_try_with_capacity, Error};
+use kmr_common::{
+    crypto, der_err, get_tag_value, km_err, tag, try_to_vec, vec_try_with_capacity, Error,
+};
 use kmr_common::{get_bool_tag_value, get_opt_tag_value, FallibleAllocExt};
 use kmr_wire::{
     keymint,
@@ -22,7 +38,8 @@ use kmr_wire::{
     },
     KeySizeInBits, RsaExponent,
 };
-use spki::{AlgorithmIdentifier, ObjectIdentifier, SubjectPublicKeyInfo};
+use spki::{AlgorithmIdentifier, ObjectIdentifier, SubjectPublicKeyInfoOwned};
+use x509_cert::serial_number::SerialNumber;
 use x509_cert::{
     certificate::{Certificate, TbsCertificate, Version},
     ext::pkix::{constraints::BasicConstraints, KeyUsage, KeyUsages},
@@ -30,9 +47,6 @@ use x509_cert::{
     name::RdnSequence,
     time::Time,
 };
-
-/// Version code for KeyMint v3.
-pub const KEYMINT_V3_VERSION: i32 = 300;
 
 /// OID value for the Android Attestation extension.
 pub const ATTESTATION_EXTENSION_OID: ObjectIdentifier =
@@ -42,27 +56,25 @@ pub const ATTESTATION_EXTENSION_OID: ObjectIdentifier =
 const EMPTY_BOOT_KEY: [u8; 32] = [0u8; 32];
 
 /// Build an ASN.1 DER-encodable `Certificate`.
-pub(crate) fn certificate<'a>(
-    tbs_cert: TbsCertificate<'a>,
-    sig_val: &'a [u8],
-) -> Result<Certificate<'a>, Error> {
+pub(crate) fn certificate(tbs_cert: TbsCertificate, sig_val: &[u8]) -> Result<Certificate, Error> {
     Ok(Certificate {
-        signature_algorithm: tbs_cert.signature,
+        signature_algorithm: tbs_cert.signature.clone(),
         tbs_certificate: tbs_cert,
-        signature: BitStringRef::new(0, sig_val)?,
+        signature: BitString::new(0, sig_val)
+            .map_err(|e| der_err!(e, "failed to build BitString"))?,
     })
 }
 
 /// Build an ASN.1 DER-encodable `tbsCertificate`.
 pub(crate) fn tbs_certificate<'a>(
     info: &'a Option<SigningInfo>,
-    spki: SubjectPublicKeyInfo<'a>,
+    spki: SubjectPublicKeyInfoOwned,
     key_usage_ext_bits: &'a [u8],
     basic_constraint_ext_val: Option<&'a [u8]>,
     attestation_ext: Option<&'a [u8]>,
     chars: &'a [KeyParam],
     params: &'a [KeyParam],
-) -> Result<TbsCertificate<'a>, Error> {
+) -> Result<TbsCertificate, Error> {
     let cert_serial = tag::get_cert_serial(params)?;
     let cert_subject = tag::get_cert_subject(params)?;
     let not_before = get_tag_value!(params, CertificateNotBefore, ErrorCode::MissingNotBefore)?;
@@ -75,7 +87,7 @@ pub(crate) fn tbs_certificate<'a>(
             KeyMaterial::Rsa(_) => crypto::rsa::SHA256_PKCS1_SIGNATURE_OID,
             KeyMaterial::Ec(curve, _, _) => crypto::ec::curve_to_signing_oid(curve),
             _ => {
-                return Err(km_err!(UnknownError, "unexpected cert signing key type"));
+                return Err(km_err!(UnsupportedAlgorithm, "unexpected cert signing key type"));
             }
         },
         None => {
@@ -87,7 +99,7 @@ pub(crate) fn tbs_certificate<'a>(
                 }
                 alg => {
                     return Err(km_err!(
-                        UnknownError,
+                        UnsupportedAlgorithm,
                         "unexpected algorithm for public key {:?}",
                         alg
                     ))
@@ -101,8 +113,12 @@ pub(crate) fn tbs_certificate<'a>(
     };
 
     // Build certificate extensions
-    let key_usage_extension =
-        Extension { extn_id: KeyUsage::OID, critical: true, extn_value: key_usage_ext_bits };
+    let key_usage_extension = Extension {
+        extn_id: KeyUsage::OID,
+        critical: true,
+        extn_value: OctetString::new(key_usage_ext_bits)
+            .map_err(|e| der_err!(e, "failed to build OctetString"))?,
+    };
 
     let mut cert_extensions = vec_try_with_capacity!(3)?;
     cert_extensions.push(key_usage_extension); // capacity enough
@@ -111,7 +127,8 @@ pub(crate) fn tbs_certificate<'a>(
         let basic_constraint_ext = Extension {
             extn_id: BasicConstraints::OID,
             critical: true,
-            extn_value: basic_constraint_ext_val,
+            extn_value: OctetString::new(basic_constraint_ext_val)
+                .map_err(|e| der_err!(e, "failed to build OctetString"))?,
         };
         cert_extensions.push(basic_constraint_ext); // capacity enough
     }
@@ -120,21 +137,25 @@ pub(crate) fn tbs_certificate<'a>(
         let attest_ext = Extension {
             extn_id: AttestationExtension::OID,
             critical: false,
-            extn_value: attest_extn_val,
+            extn_value: OctetString::new(attest_extn_val)
+                .map_err(|e| der_err!(e, "failed to build OctetString"))?,
         };
         cert_extensions.push(attest_ext) // capacity enough
     }
 
     Ok(TbsCertificate {
         version: Version::V3,
-        serial_number: UIntRef::new(cert_serial)?,
+        serial_number: SerialNumber::new(cert_serial)
+            .map_err(|e| der_err!(e, "failed to build serial number for {:?}", cert_serial))?,
         signature: AlgorithmIdentifier { oid: sig_alg_oid, parameters: None },
-        issuer: RdnSequence::from_der(cert_issuer)?,
+        issuer: RdnSequence::from_der(cert_issuer)
+            .map_err(|e| der_err!(e, "failed to build issuer"))?,
         validity: x509_cert::time::Validity {
             not_before: validity_time_from_datetime(not_before)?,
             not_after: validity_time_from_datetime(not_after)?,
         },
-        subject: RdnSequence::from_der(cert_subject)?,
+        subject: RdnSequence::from_der(cert_subject)
+            .map_err(|e| der_err!(e, "failed to build subject"))?,
         subject_public_key_info: spki,
         issuer_unique_id: None,
         subject_unique_id: None,
@@ -145,12 +166,12 @@ pub(crate) fn tbs_certificate<'a>(
 /// Extract the Subject field from a `keymint::Certificate` as DER-encoded data.
 pub(crate) fn extract_subject(cert: &keymint::Certificate) -> Result<Vec<u8>, Error> {
     let cert = x509_cert::Certificate::from_der(&cert.encoded_certificate)
-        .map_err(|e| km_err!(UnknownError, "failed to parse certificate: {:?}", e))?;
+        .map_err(|e| km_err!(EncodingError, "failed to parse certificate: {:?}", e))?;
     let subject_data = cert
         .tbs_certificate
         .subject
-        .to_vec()
-        .map_err(|e| km_err!(UnknownError, "failed to DER-encode subject: {:?}", e))?;
+        .to_der()
+        .map_err(|e| km_err!(EncodingError, "failed to DER-encode subject: {:?}", e))?;
     Ok(subject_data)
 }
 
@@ -166,17 +187,26 @@ fn validity_time_from_datetime(when: DateTime) -> Result<Time, Error> {
 
         let duration = Duration::from_secs(u64::try_from(secs_since_epoch).map_err(dt_err)?);
         if duration >= MAX_UTC_TIME {
-            Ok(Time::GeneralTime(GeneralizedTime::from_unix_duration(duration)?))
+            Ok(Time::GeneralTime(
+                GeneralizedTime::from_unix_duration(duration)
+                    .map_err(|e| der_err!(e, "failed to build GeneralTime for {:?}", when))?,
+            ))
         } else {
-            Ok(Time::UtcTime(UtcTime::from_unix_duration(duration)?))
+            Ok(Time::UtcTime(
+                UtcTime::from_unix_duration(duration)
+                    .map_err(|e| der_err!(e, "failed to build UtcTime for {:?}", when))?,
+            ))
         }
     } else {
         // TODO: cope with negative offsets from Unix Epoch.
-        Ok(Time::GeneralTime(GeneralizedTime::from_unix_duration(Duration::from_secs(0))?))
+        Ok(Time::GeneralTime(
+            GeneralizedTime::from_unix_duration(Duration::from_secs(0))
+                .map_err(|e| der_err!(e, "failed to build GeneralizedTime(0) for {:?}", when))?,
+        ))
     }
 }
 
-pub(crate) fn asn1_der_encode<T: Encode>(obj: &T) -> Result<Vec<u8>, Error> {
+pub(crate) fn asn1_der_encode<T: Encode>(obj: &T) -> Result<Vec<u8>, der::Error> {
     let mut encoded_data = Vec::<u8>::new();
     obj.encode_to_vec(&mut encoded_data)?;
     Ok(encoded_data)
@@ -267,6 +297,7 @@ enum SecurityLevel {
 /// Build an ASN.1 DER-encoded attestation extension.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn attestation_extension<'a>(
+    keymint_version: i32,
     challenge: &'a [u8],
     app_id: &'a [u8],
     security_level: keymint::SecurityLevel,
@@ -286,7 +317,7 @@ pub(crate) fn attestation_extension<'a>(
             l if l == security_level => hw_chars = &characteristic.authorizations,
             l => {
                 return Err(km_err!(
-                    UnknownError,
+                    InvalidTag,
                     "found characteristics for unexpected security level {:?}",
                     l,
                 ))
@@ -307,11 +338,11 @@ pub(crate) fn attestation_extension<'a>(
         None,
     )?;
     let sec_level = SecurityLevel::try_from(security_level as u32)
-        .map_err(|_| km_err!(UnknownError, "invalid security level {:?}", security_level))?;
+        .map_err(|_| km_err!(InvalidArgument, "invalid security level {:?}", security_level))?;
     let ext = AttestationExtension {
-        attestation_version: KEYMINT_V3_VERSION,
+        attestation_version: keymint_version,
         attestation_security_level: sec_level,
-        keymint_version: KEYMINT_V3_VERSION,
+        keymint_version,
         keymint_security_level: sec_level,
         attestation_challenge: challenge,
         unique_id,
@@ -439,7 +470,11 @@ impl<'a> AuthorizationList<'a> {
         );
         check_attestation_id!(keygen_params, AttestationIdModel, attestation_ids.map(|v| &v.model));
 
-        let encoded_rot = if let Some(rot) = rot_info { Some(rot.to_vec()?) } else { None };
+        let encoded_rot = if let Some(rot) = rot_info {
+            Some(rot.to_der().map_err(|e| der_err!(e, "failed to encode RoT"))?)
+        } else {
+            None
+        };
         Ok(Self {
             auths: auths.into(),
             keygen_params: keygen_params.into(),
@@ -491,12 +526,6 @@ impl<'a> AuthorizationList<'a> {
             app_id: attest_app_id,
         })
     }
-}
-
-/// Convert an error into a default `der::Error`.
-#[inline]
-fn der_err(_e: Error) -> der::Error {
-    der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
 }
 
 /// Convert an error into a `der::Error` indicating allocation failure.
@@ -763,6 +792,10 @@ fn decode_value_from_bytes(
             key_param_from_asn1_integer!(UsageCountLimit, u32, tlv_bytes, key_params);
         }
         Tag::UserSecureId => {
+            // Note that the `UserSecureId` tag has tag type `ULONG_REP` indicating that it can be
+            // repeated, but the ASN.1 schema for `AuthorizationList` has this field as having type
+            // `INTEGER` not `SET OF INTEGER`. This reflects the special usage of `UserSecureId`
+            // in `importWrappedKey()` processing.
             key_param_from_asn1_integer!(UserSecureId, u64, tlv_bytes, key_params);
         }
         Tag::NoAuthRequired => {
@@ -894,9 +927,7 @@ fn decode_tag_from_bytes<'a, R: der::Reader<'a>>(
 // together with an extra variant that deals with OCTET STRING values that must match
 // a provisioned attestation ID value.
 macro_rules! asn1_set_of_integer {
-    {
-        $contents:ident, $params:expr, $variant:ident
-    } => {
+    { $params:expr, $variant:ident } => {
         {
             let mut results = Vec::new();
             for param in $params.as_ref() {
@@ -916,158 +947,240 @@ macro_rules! asn1_set_of_integer {
                             continue; // skip duplicate
                         }
                     }
-                    set.add(val)?;
+                    set.insert_ordered(val)?;
                     prev_val = Some(val);
                 }
-                $contents.try_push(Box::new(ExplicitTaggedValue {
+                Some(ExplicitTaggedValue {
                     tag: raw_tag_value(Tag::$variant),
                     val: set,
-                })).map_err(der_alloc_err)?;
+                })
+            } else {
+                None
             }
         }
     }
 }
 macro_rules! asn1_integer {
-    {
-        $contents:ident, $params:expr, $variant:ident
-    } => {
-        {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(der_err)? {
-                    $contents.try_push(Box::new(ExplicitTaggedValue {
-                        tag: raw_tag_value(Tag::$variant),
-                        val: *val as i64
-                    })).map_err(der_alloc_err)?;
-            }
+    { $params:expr, $variant:ident } => {
+        if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
+            log::warn!("failed to get {} value for ext", stringify!($variant));
+            der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
+        })? {
+            Some(ExplicitTaggedValue {
+                tag: raw_tag_value(Tag::$variant),
+                val: *val as i64
+            })
+        } else {
+            None
         }
     }
 }
 macro_rules! asn1_integer_newtype {
-    {
-        $contents:ident, $params:expr, $variant:ident
-    } => {
-        {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(der_err)? {
-                    $contents.try_push(Box::new(ExplicitTaggedValue {
-                        tag: raw_tag_value(Tag::$variant),
-                        val: val.0 as i64
-                    })).map_err(der_alloc_err)?;
-            }
+    { $params:expr, $variant:ident } => {
+        if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
+            log::warn!("failed to get {} value for ext", stringify!($variant));
+            der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
+        })? {
+            Some(ExplicitTaggedValue {
+                tag: raw_tag_value(Tag::$variant),
+                val: val.0 as i64
+            })
+        } else {
+            None
         }
     }
 }
 macro_rules! asn1_integer_datetime {
-    {
-        $contents:ident, $params:expr, $variant:ident
-    } => {
-        {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(der_err)? {
-                    $contents.try_push(Box::new(ExplicitTaggedValue {
-                        tag: raw_tag_value(Tag::$variant),
-                        val: val.ms_since_epoch
-                    })).map_err(der_alloc_err)?;
-            }
+    { $params:expr, $variant:ident } => {
+        if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
+            log::warn!("failed to get {} value for ext", stringify!($variant));
+            der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
+        })? {
+            Some(ExplicitTaggedValue {
+                tag: raw_tag_value(Tag::$variant),
+                val: val.ms_since_epoch
+            })
+        } else {
+            None
         }
     }
 }
 macro_rules! asn1_null {
-    {
-        $contents:ident, $params:expr, $variant:ident
-    } => {
-        {
-            if get_bool_tag_value!($params.as_ref(), $variant).map_err(der_err)? {
-                    $contents.try_push(Box::new(ExplicitTaggedValue {
-                        tag: raw_tag_value(Tag::$variant),
-                        val: ()
-                    })).map_err(der_alloc_err)?;
-            }
+    { $params:expr, $variant:ident } => {
+        if get_bool_tag_value!($params.as_ref(), $variant).map_err(|_e| {
+            log::warn!("failed to get {} value for ext", stringify!($variant));
+            der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
+        })? {
+            Some(ExplicitTaggedValue {
+                tag: raw_tag_value(Tag::$variant),
+                val: ()
+            })
+        } else {
+            None
         }
     }
 }
 macro_rules! asn1_octet_string {
-    {
-        $contents:ident, $params:expr, $variant:ident
-    } => {
-        {
-            if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(der_err)? {
-                    $contents.try_push(Box::new(ExplicitTaggedValue {
-                        tag: raw_tag_value(Tag::$variant),
-                        val: der::asn1::OctetStringRef::new(val)?,
-                    })).map_err(der_alloc_err)?;
-            }
+    { $params:expr, $variant:ident } => {
+        if let Some(val) = get_opt_tag_value!($params.as_ref(), $variant).map_err(|_e| {
+            log::warn!("failed to get {} value for ext", stringify!($variant));
+            der::Error::new(der::ErrorKind::Failed, der::Length::ZERO)
+        })? {
+            Some(ExplicitTaggedValue {
+                tag: raw_tag_value(Tag::$variant),
+                val: der::asn1::OctetStringRef::new(val)?,
+            })
+        } else {
+            None
         }
     }
 }
 
-impl<'a> Sequence<'a> for AuthorizationList<'a> {
-    fn fields<F, T>(&self, f: F) -> der::Result<T>
-    where
-        F: FnOnce(&[&dyn Encode]) -> der::Result<T>,
-    {
-        let mut contents = Vec::<Box<dyn Encode>>::new();
+fn asn1_val<T: Encode>(
+    val: Option<ExplicitTaggedValue<T>>,
+    writer: &mut impl der::Writer,
+) -> der::Result<()> {
+    if let Some(val) = val {
+        val.encode(writer)
+    } else {
+        Ok(())
+    }
+}
 
-        asn1_set_of_integer!(contents, self.auths, Purpose);
-        asn1_integer!(contents, self.auths, Algorithm);
-        asn1_integer_newtype!(contents, self.auths, KeySize);
-        asn1_set_of_integer!(contents, self.auths, BlockMode);
-        asn1_set_of_integer!(contents, self.auths, Digest);
-        asn1_set_of_integer!(contents, self.auths, Padding);
-        asn1_null!(contents, self.auths, CallerNonce);
-        asn1_integer!(contents, self.auths, MinMacLength);
-        asn1_integer!(contents, self.auths, EcCurve);
-        asn1_integer_newtype!(contents, self.auths, RsaPublicExponent);
-        asn1_set_of_integer!(contents, self.auths, RsaOaepMgfDigest);
-        asn1_null!(contents, self.auths, RollbackResistance);
-        asn1_null!(contents, self.auths, EarlyBootOnly);
-        asn1_integer_datetime!(contents, self.auths, ActiveDatetime);
-        asn1_integer_datetime!(contents, self.auths, OriginationExpireDatetime);
-        asn1_integer_datetime!(contents, self.auths, UsageExpireDatetime);
-        asn1_integer!(contents, self.auths, UsageCountLimit);
-        asn1_integer!(contents, self.auths, UserSecureId);
-        asn1_null!(contents, self.auths, NoAuthRequired);
-        asn1_integer!(contents, self.auths, UserAuthType);
-        asn1_integer!(contents, self.auths, AuthTimeout);
-        asn1_null!(contents, self.auths, AllowWhileOnBody);
-        asn1_null!(contents, self.auths, TrustedUserPresenceRequired);
-        asn1_null!(contents, self.auths, TrustedConfirmationRequired);
-        asn1_null!(contents, self.auths, UnlockedDeviceRequired);
-        asn1_integer_datetime!(contents, self.auths, CreationDatetime);
-        asn1_integer!(contents, self.auths, Origin);
-        // Root of trust info is a special case (not in key characteristics).
+fn asn1_len<T: Encode>(val: Option<ExplicitTaggedValue<T>>) -> der::Result<Length> {
+    match val {
+        Some(val) => val.encoded_len(),
+        None => Ok(Length::ZERO),
+    }
+}
+
+impl<'a> Sequence<'a> for AuthorizationList<'a> {}
+
+impl<'a> EncodeValue for AuthorizationList<'a> {
+    fn value_len(&self) -> der::Result<Length> {
+        let mut length = asn1_len(asn1_set_of_integer!(self.auths, Purpose))?
+            + asn1_len(asn1_integer!(self.auths, Algorithm))?
+            + asn1_len(asn1_integer_newtype!(self.auths, KeySize))?
+            + asn1_len(asn1_set_of_integer!(self.auths, BlockMode))?
+            + asn1_len(asn1_set_of_integer!(self.auths, Digest))?
+            + asn1_len(asn1_set_of_integer!(self.auths, Padding))?
+            + asn1_len(asn1_null!(self.auths, CallerNonce))?
+            + asn1_len(asn1_integer!(self.auths, MinMacLength))?
+            + asn1_len(asn1_integer!(self.auths, EcCurve))?
+            + asn1_len(asn1_integer_newtype!(self.auths, RsaPublicExponent))?
+            + asn1_len(asn1_set_of_integer!(self.auths, RsaOaepMgfDigest))?
+            + asn1_len(asn1_null!(self.auths, RollbackResistance))?
+            + asn1_len(asn1_null!(self.auths, EarlyBootOnly))?
+            + asn1_len(asn1_integer_datetime!(self.auths, ActiveDatetime))?
+            + asn1_len(asn1_integer_datetime!(self.auths, OriginationExpireDatetime))?
+            + asn1_len(asn1_integer_datetime!(self.auths, UsageExpireDatetime))?
+            + asn1_len(asn1_integer!(self.auths, UsageCountLimit))?
+            + asn1_len(asn1_null!(self.auths, NoAuthRequired))?
+            + asn1_len(asn1_integer!(self.auths, UserAuthType))?
+            + asn1_len(asn1_integer!(self.auths, AuthTimeout))?
+            + asn1_len(asn1_null!(self.auths, AllowWhileOnBody))?
+            + asn1_len(asn1_null!(self.auths, TrustedUserPresenceRequired))?
+            + asn1_len(asn1_null!(self.auths, TrustedConfirmationRequired))?
+            + asn1_len(asn1_null!(self.auths, UnlockedDeviceRequired))?
+            + asn1_len(asn1_integer_datetime!(self.auths, CreationDatetime))?
+            + asn1_len(asn1_integer!(self.auths, Origin))?;
         if let Some(KeyParam::RootOfTrust(encoded_rot_info)) = &self.rot_info {
-            contents
-                .try_push(Box::new(ExplicitTaggedValue {
+            length = length
+                + ExplicitTaggedValue {
                     tag: raw_tag_value(Tag::RootOfTrust),
                     val: RootOfTrust::from_der(encoded_rot_info.as_slice())?,
-                }))
-                .map_err(der_alloc_err)?;
+                }
+                .encoded_len()?;
         }
-        asn1_integer!(contents, self.auths, OsVersion);
-        asn1_integer!(contents, self.auths, OsPatchlevel);
-        // Attestation application ID is a special case (not in key characteristics).
+        length = length
+            + asn1_len(asn1_integer!(self.auths, OsVersion))?
+            + asn1_len(asn1_integer!(self.auths, OsPatchlevel))?;
         if let Some(KeyParam::AttestationApplicationId(app_id)) = &self.app_id {
-            contents
-                .try_push(Box::new(ExplicitTaggedValue {
+            length = length
+                + ExplicitTaggedValue {
                     tag: raw_tag_value(Tag::AttestationApplicationId),
                     val: der::asn1::OctetStringRef::new(app_id.as_slice())?,
-                }))
-                .map_err(der_alloc_err)?;
+                }
+                .encoded_len()?;
+        }
+        length = length
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdBrand))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdDevice))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdProduct))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdSerial))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdImei))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdMeid))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdManufacturer))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdModel))?
+            + asn1_len(asn1_integer!(self.auths, VendorPatchlevel))?
+            + asn1_len(asn1_integer!(self.auths, BootPatchlevel))?
+            + asn1_len(asn1_null!(self.auths, DeviceUniqueAttestation))?
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdSecondImei))?;
+        length
+    }
+
+    fn encode_value(&self, writer: &mut impl der::Writer) -> der::Result<()> {
+        asn1_val(asn1_set_of_integer!(self.auths, Purpose), writer)?;
+        asn1_val(asn1_integer!(self.auths, Algorithm), writer)?;
+        asn1_val(asn1_integer_newtype!(self.auths, KeySize), writer)?;
+        asn1_val(asn1_set_of_integer!(self.auths, BlockMode), writer)?;
+        asn1_val(asn1_set_of_integer!(self.auths, Digest), writer)?;
+        asn1_val(asn1_set_of_integer!(self.auths, Padding), writer)?;
+        asn1_val(asn1_null!(self.auths, CallerNonce), writer)?;
+        asn1_val(asn1_integer!(self.auths, MinMacLength), writer)?;
+        asn1_val(asn1_integer!(self.auths, EcCurve), writer)?;
+        asn1_val(asn1_integer_newtype!(self.auths, RsaPublicExponent), writer)?;
+        asn1_val(asn1_set_of_integer!(self.auths, RsaOaepMgfDigest), writer)?;
+        asn1_val(asn1_null!(self.auths, RollbackResistance), writer)?;
+        asn1_val(asn1_null!(self.auths, EarlyBootOnly), writer)?;
+        asn1_val(asn1_integer_datetime!(self.auths, ActiveDatetime), writer)?;
+        asn1_val(asn1_integer_datetime!(self.auths, OriginationExpireDatetime), writer)?;
+        asn1_val(asn1_integer_datetime!(self.auths, UsageExpireDatetime), writer)?;
+        asn1_val(asn1_integer!(self.auths, UsageCountLimit), writer)?;
+        // Skip `UserSecureId` as it's only included in the extension for
+        // importWrappedKey() cases.
+        asn1_val(asn1_null!(self.auths, NoAuthRequired), writer)?;
+        asn1_val(asn1_integer!(self.auths, UserAuthType), writer)?;
+        asn1_val(asn1_integer!(self.auths, AuthTimeout), writer)?;
+        asn1_val(asn1_null!(self.auths, AllowWhileOnBody), writer)?;
+        asn1_val(asn1_null!(self.auths, TrustedUserPresenceRequired), writer)?;
+        asn1_val(asn1_null!(self.auths, TrustedConfirmationRequired), writer)?;
+        asn1_val(asn1_null!(self.auths, UnlockedDeviceRequired), writer)?;
+        asn1_val(asn1_integer_datetime!(self.auths, CreationDatetime), writer)?;
+        asn1_val(asn1_integer!(self.auths, Origin), writer)?;
+        // Root of trust info is a special case (not in key characteristics).
+        if let Some(KeyParam::RootOfTrust(encoded_rot_info)) = &self.rot_info {
+            ExplicitTaggedValue {
+                tag: raw_tag_value(Tag::RootOfTrust),
+                val: RootOfTrust::from_der(encoded_rot_info.as_slice())?,
+            }
+            .encode(writer)?;
+        }
+        asn1_val(asn1_integer!(self.auths, OsVersion), writer)?;
+        asn1_val(asn1_integer!(self.auths, OsPatchlevel), writer)?;
+        // Attestation application ID is a special case (not in key characteristics).
+        if let Some(KeyParam::AttestationApplicationId(app_id)) = &self.app_id {
+            ExplicitTaggedValue {
+                tag: raw_tag_value(Tag::AttestationApplicationId),
+                val: der::asn1::OctetStringRef::new(app_id.as_slice())?,
+            }
+            .encode(writer)?;
         }
         // Accuracy of attestation IDs has already been checked, so just copy across.
-        asn1_octet_string!(contents, &self.keygen_params, AttestationIdBrand);
-        asn1_octet_string!(contents, &self.keygen_params, AttestationIdDevice);
-        asn1_octet_string!(contents, &self.keygen_params, AttestationIdProduct);
-        asn1_octet_string!(contents, &self.keygen_params, AttestationIdSerial);
-        asn1_octet_string!(contents, &self.keygen_params, AttestationIdImei);
-        asn1_octet_string!(contents, &self.keygen_params, AttestationIdMeid);
-        asn1_octet_string!(contents, &self.keygen_params, AttestationIdManufacturer);
-        asn1_octet_string!(contents, &self.keygen_params, AttestationIdModel);
-        asn1_integer!(contents, self.auths, VendorPatchlevel);
-        asn1_integer!(contents, self.auths, BootPatchlevel);
-        asn1_null!(contents, self.auths, DeviceUniqueAttestation);
-        asn1_octet_string!(contents, &self.keygen_params, AttestationIdSecondImei);
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdBrand), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdDevice), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdProduct), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdSerial), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdImei), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdMeid), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdManufacturer), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdModel), writer)?;
+        asn1_val(asn1_integer!(self.auths, VendorPatchlevel), writer)?;
+        asn1_val(asn1_integer!(self.auths, BootPatchlevel), writer)?;
+        asn1_val(asn1_null!(self.auths, DeviceUniqueAttestation), writer)?;
+        asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdSecondImei), writer)?;
 
-        let ref_contents: Vec<&dyn Encode> = contents.iter().map(|v| v.as_ref()).collect();
-        f(&ref_contents)
+        Ok(())
     }
 }
 
@@ -1116,7 +1229,7 @@ impl<T: Encode> Encode for ExplicitTaggedValue<T> {
         self.explicit_tag_len() + inner_len.encoded_len()? + inner_len
     }
 
-    fn encode(&self, encoder: &mut dyn der::Writer) -> der::Result<()> {
+    fn encode(&self, encoder: &mut impl der::Writer) -> der::Result<()> {
         let inner_len = self.val.encoded_len()?;
         self.explicit_tag_encode(encoder)?;
         inner_len.encode(encoder)?;
@@ -1196,16 +1309,15 @@ impl From<keymint::VerifiedBootState> for VerifiedBootState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::boxed::Box;
-    use alloc::vec;
+    use crate::KeyMintHalVersion;
 
     #[test]
     fn test_attest_ext_encode_decode() {
         let sec_level = SecurityLevel::TrustedEnvironment;
         let ext = AttestationExtension {
-            attestation_version: KEYMINT_V3_VERSION,
+            attestation_version: KeyMintHalVersion::V3 as i32,
             attestation_security_level: sec_level,
-            keymint_version: KEYMINT_V3_VERSION,
+            keymint_version: KeyMintHalVersion::V3 as i32,
             keymint_security_level: sec_level,
             attestation_challenge: b"abc",
             unique_id: b"xxx",
@@ -1224,7 +1336,7 @@ mod tests {
             )
             .unwrap(),
         };
-        let got = ext.to_vec().unwrap();
+        let got = ext.to_der().unwrap();
         let want = concat!(
             "3071",   // SEQUENCE
             "0202",   // INTEGER len 2
@@ -1264,15 +1376,18 @@ mod tests {
 
     #[test]
     fn test_explicit_tagged_value() {
-        let tests: Vec<(Box<dyn Encode>, &'static str)> = vec![
-            (Box::new(ExplicitTaggedValue { tag: 2, val: 16 }), "a203020110"),
-            (Box::new(ExplicitTaggedValue { tag: 2, val: () }), "a2020500"),
-            (Box::new(ExplicitTaggedValue { tag: 503, val: 16 }), "bf837703020110"),
-        ];
-        for (input, want) in tests {
-            let got = input.to_vec().unwrap();
-            assert_eq!(hex::encode(got), want);
-        }
+        assert_eq!(
+            hex::encode(ExplicitTaggedValue { tag: 2, val: 16 }.to_der().unwrap()),
+            "a203020110"
+        );
+        assert_eq!(
+            hex::encode(ExplicitTaggedValue { tag: 2, val: () }.to_der().unwrap()),
+            "a2020500"
+        );
+        assert_eq!(
+            hex::encode(ExplicitTaggedValue { tag: 503, val: 16 }.to_der().unwrap()),
+            "bf837703020110"
+        );
     }
 
     #[test]
@@ -1290,7 +1405,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let got = authz_list.to_vec().unwrap();
+        let got = authz_list.to_der().unwrap();
         let want: &str = concat!(
             "3055", // SEQUENCE len 55
             "a203", // EXPLICIT [2]
@@ -1317,6 +1432,98 @@ mod tests {
     }
 
     #[test]
+    fn test_authz_list_user_secure_id_encode() {
+        // Create an authorization list that includes multiple values for SecureUserId.
+        let authz_list = AuthorizationList::new(
+            &[
+                KeyParam::Algorithm(keymint::Algorithm::Ec),
+                KeyParam::UserSecureId(42),
+                KeyParam::UserSecureId(43),
+                KeyParam::UserSecureId(44),
+            ],
+            &[],
+            None,
+            Some(RootOfTrust {
+                verified_boot_key: &[0xbbu8; 32],
+                device_locked: false,
+                verified_boot_state: VerifiedBootState::Unverified,
+                verified_boot_hash: &[0xee; 32],
+            }),
+            None,
+        )
+        .unwrap();
+        let got = authz_list.to_der().unwrap();
+        // The `SecureUserId` values are *not* included in the generated output.
+        let want: &str = concat!(
+            "3055", // SEQUENCE len 55
+            "a203", // EXPLICIT [2]
+            "0201", // INTEGER len 1
+            "03",   // 3 (Algorithm::Ec)
+            "bf8540",
+            "4c",   // EXPLICIT [704] len 0x4c
+            "304a", // SEQUENCE len x4a
+            "0420", // OCTET STRING len 32
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "0101", // BOOLEAN len 1
+            "00",   // false
+            "0a01", // ENUMERATED len 1
+            "02",   // Unverified(2)
+            "0420", // OCTET STRING len 32
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        );
+        // encode
+        assert_eq!(hex::encode(got), want);
+    }
+
+    #[test]
+    fn test_authz_list_user_secure_id_decode() {
+        // Create a DER-encoded `AuthorizationList` that includes a `UserSecureId` value.
+        let input = hex::decode(concat!(
+            "305c",   // SEQUENCE
+            "a203",   // EXPLICIT [2] len 3
+            "0201",   // INTEGER len 1
+            "03",     // 3 (Algorithm::Ec)
+            "bf8376", // EXPLICIT [502]
+            "03",     // len 3
+            "0201",   // INTEGER len 1
+            "02",     // 2
+            "bf8540", // EXPLICIT [704]
+            "4c",     // len 0x4c
+            "304a",   // SEQUENCE len x4a
+            "0420",   // OCTET STRING len 32
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "0101", // BOOLEAN len 1
+            "00",   // false
+            "0a01", // ENUMERATED len 1
+            "02",   // Unverified(2)
+            "0420", // OCTET STRING len 32
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        ))
+        .unwrap();
+        let got = AuthorizationList::from_der(&input).unwrap();
+
+        let want = AuthorizationList::new(
+            &[KeyParam::Algorithm(keymint::Algorithm::Ec), KeyParam::UserSecureId(2)],
+            &[],
+            None,
+            Some(RootOfTrust {
+                verified_boot_key: &[0xbbu8; 32],
+                device_locked: false,
+                verified_boot_state: VerifiedBootState::Unverified,
+                verified_boot_hash: &[0xee; 32],
+            }),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(got, want);
+    }
+
+    #[test]
     fn test_authz_list_dup_encode() {
         use kmr_wire::keymint::Digest;
         let authz_list = AuthorizationList::new(
@@ -1336,7 +1543,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let got = authz_list.to_vec().unwrap();
+        let got = authz_list.to_der().unwrap();
         assert!(AuthorizationList::from_der(got.as_slice()).is_ok());
     }
 
@@ -1356,6 +1563,6 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(authz_list.to_vec().is_err());
+        assert!(authz_list.to_der().is_err());
     }
 }

@@ -1,3 +1,17 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Static information about tag behaviour.
 
 use crate::{km_err, Error};
@@ -40,6 +54,7 @@ pub const KEYSTORE_ENFORCED_CHARACTERISTICS: &[Tag] = &[
     Tag::AllowWhileOnBody,
     Tag::CreationDatetime,
     Tag::MaxBootLevel,
+    Tag::UnlockedDeviceRequired,
 ];
 
 /// The set of characteristics that are enforced by KeyMint.
@@ -614,8 +629,6 @@ const INFO: [(Tag, Info); 60] = [
             bit_index: 27,
         },
     ),
-    // Keystore enforces unlocked-by-specific user,  KeyMint unlocked-at-all (according to
-    // deviceLocked() invocations)
     (
         Tag::UnlockedDeviceRequired,
         Info {
@@ -623,7 +636,7 @@ const INFO: [(Tag, Info); 60] = [
             tt: TagType::Bool,
             ext_asn1_type: Some("NULL"),
             user_can_specify: UserSpecifiable(true),
-            characteristic: Characteristic::BothEnforced,
+            characteristic: Characteristic::KeystoreEnforced,
             op_param: OperationParam::NotOperationParam,
             keymint_auto_adds: AutoAddedCharacteristic(false),
             lifetime: ValueLifetime::Variable,

@@ -1,3 +1,17 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Functionality for remote key provisioning
 
 use super::KeyMintTa;
@@ -17,8 +31,8 @@ use kmr_wire::{
     cbor,
     cbor::cbor,
     keymint::{
-        Algorithm, DateTime, Digest, EcCurve, KeyParam, KeyPurpose, SecurityLevel,
-        VerifiedBootState,
+        Algorithm, Digest, EcCurve, KeyParam, KeyPurpose, SecurityLevel, VerifiedBootState,
+        UNDEFINED_NOT_AFTER, UNDEFINED_NOT_BEFORE,
     },
     read_to_value, rpc,
     rpc::{
@@ -37,13 +51,14 @@ const RPC_P256_KEYGEN_PARAMS: [KeyParam; 8] = [
     KeyParam::EcCurve(EcCurve::P256),
     KeyParam::NoAuthRequired,
     KeyParam::Digest(Digest::Sha256),
-    KeyParam::CertificateNotBefore(DateTime { ms_since_epoch: 0 }),
-    KeyParam::CertificateNotAfter(DateTime { ms_since_epoch: 253402300799000 }),
+    KeyParam::CertificateNotBefore(UNDEFINED_NOT_BEFORE),
+    KeyParam::CertificateNotAfter(UNDEFINED_NOT_AFTER),
 ];
 
 const MAX_CHALLENGE_SIZE_V2: usize = 64;
 
-impl<'a> KeyMintTa<'a> {
+impl KeyMintTa {
+    /// Return the CBOR-encoded `DeviceInfo`.
     pub fn rpc_device_info(&self) -> Result<Vec<u8>, Error> {
         let info = self.rpc_device_info_cbor()?;
         serialize_cbor(&info)
@@ -51,17 +66,17 @@ impl<'a> KeyMintTa<'a> {
 
     fn rpc_device_info_cbor(&self) -> Result<Value, Error> {
         // First make sure all the relevant info is available.
-        let ids = self
-            .get_attestation_ids()
-            .ok_or_else(|| km_err!(UnknownError, "attestation ID info not available"))?;
+        let ids = self.get_attestation_ids().ok_or_else(|| {
+            km_err!(AttestationIdsNotProvisioned, "attestation ID info not available")
+        })?;
         let boot_info = self
             .boot_info
             .as_ref()
-            .ok_or_else(|| km_err!(UnknownError, "boot info not available"))?;
+            .ok_or_else(|| km_err!(HardwareNotYetAvailable, "boot info not available"))?;
         let hal_info = self
             .hal_info
             .as_ref()
-            .ok_or_else(|| km_err!(UnknownError, "HAL info not available"))?;
+            .ok_or_else(|| km_err!(HardwareNotYetAvailable, "HAL info not available"))?;
 
         let brand = String::from_utf8_lossy(&ids.brand);
         let manufacturer = String::from_utf8_lossy(&ids.manufacturer);
@@ -80,7 +95,13 @@ impl<'a> KeyMintTa<'a> {
         let security_level = match self.hw_info.security_level {
             SecurityLevel::TrustedEnvironment => "tee",
             SecurityLevel::Strongbox => "strongbox",
-            l => return Err(km_err!(UnknownError, "security level {:?} not supported", l)),
+            l => {
+                return Err(km_err!(
+                    HardwareTypeUnavailable,
+                    "security level {:?} not supported",
+                    l
+                ))
+            }
         };
 
         let fused = match &self.rpc_info {
@@ -145,7 +166,7 @@ impl<'a> KeyMintTa<'a> {
 
         let pub_cose_key = match key_material {
             KeyMaterial::Ec(curve, curve_type, ref key) => key.public_cose_key(
-                self.imp.ec,
+                &*self.imp.ec,
                 curve,
                 curve_type,
                 CoseKeyPurpose::Sign,
@@ -159,9 +180,9 @@ impl<'a> KeyMintTa<'a> {
             build_maced_pub_key(pub_cose_key_encoded, |data| -> Result<Vec<u8>, Error> {
                 // In test mode, use an all-zero HMAC key.
                 if test_mode == rpc::TestMode(true) {
-                    return hmac_sha256(self.imp.hmac, &[0; 32], data);
+                    return hmac_sha256(&*self.imp.hmac, &[0; 32], data);
                 }
-                self.dev.rpc.compute_hmac_sha256(self.imp.hmac, self.imp.hkdf, data)
+                self.dev.rpc.compute_hmac_sha256(&*self.imp.hmac, &*self.imp.hkdf, data)
             })?;
 
         let key_result = self.finish_keyblob_creation(
@@ -186,7 +207,7 @@ impl<'a> KeyMintTa<'a> {
             return Err(rpc_err!(Removed, "generate_cert_req is not supported in IRPC V3+ HAL."));
         }
         let _device_info = self.rpc_device_info()?;
-        Err(km_err!(Unimplemented, "TODO: GenerateCertificateRequest"))
+        Err(km_err!(Unimplemented, "GenerateCertificateRequest is only required for RKP before v3"))
     }
 
     pub(crate) fn generate_cert_req_v2(
@@ -236,7 +257,7 @@ impl<'a> KeyMintTa<'a> {
 
             cose_mac0.verify_tag(&[], |expected_tag, data| -> Result<(), Error> {
                 let computed_tag =
-                    self.dev.rpc.compute_hmac_sha256(self.imp.hmac, self.imp.hkdf, data)?;
+                    self.dev.rpc.compute_hmac_sha256(&*self.imp.hmac, &*self.imp.hkdf, data)?;
                 if self.imp.compare.eq(expected_tag, &computed_tag) {
                     Ok(())
                 } else {
@@ -266,7 +287,7 @@ impl<'a> KeyMintTa<'a> {
 
         // Get `SignedData`
         let signed_data_cbor = read_to_value(&self.dev.rpc.sign_data_in_cose_sign1(
-            self.imp.ec,
+            &*self.imp.ec,
             &dice_info.signing_algorithm,
             &signed_data_payload_data,
             &[],

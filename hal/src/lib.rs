@@ -1,3 +1,17 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Implementation of a HAL service for KeyMint.
 //!
 //! This implementation relies on a `SerializedChannel` abstraction for a communication channel to
@@ -37,7 +51,7 @@ mod tests;
 #[inline]
 pub fn failed_cbor(err: CborError) -> binder::Status {
     binder::Status::new_service_specific_error(
-        ErrorCode::UnknownError as i32,
+        ErrorCode::EncodingError as i32,
         Some(&CString::new(format!("CBOR conversion failed: {:?}", err)).unwrap()),
     )
 }
@@ -154,7 +168,7 @@ where
     let mut req_data = Vec::new();
     cbor::ser::into_writer(&req_arr, &mut req_data).map_err(|e| {
         binder::Status::new_service_specific_error(
-            ErrorCode::UnknownError as i32,
+            ErrorCode::EncodingError as i32,
             Some(
                 &CString::new(format!("failed to write CBOR request to buffer: {:?}", e)).unwrap(),
             ),
@@ -254,6 +268,21 @@ pub fn send_hal_info<T: SerializedChannel>(channel: &mut T) -> binder::Result<()
     })?;
     info!("HAL->TA: environment info is {:?}", req);
     let _rsp: kmr_wire::SetHalInfoResponse = channel_execute(channel, req)?;
+
+    let aidl_version = if cfg!(feature = "hal_v3") {
+        300
+    } else if cfg!(feature = "hal_v2") {
+        200
+    } else {
+        100
+    };
+    let req = kmr_wire::SetHalVersionRequest { aidl_version };
+    info!("HAL->TA: setting KeyMint HAL version to {}", aidl_version);
+    let result: binder::Result<kmr_wire::SetHalVersionResponse> = channel_execute(channel, req);
+    if let Err(e) = result {
+        // The SetHalVersionRequest message was added later; an earlier TA may not recognize it.
+        warn!("Setting KeyMint HAL version failed: {:?}", e);
+    }
     Ok(())
 }
 

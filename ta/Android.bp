@@ -16,13 +16,14 @@ package {
     default_applicable_licenses: ["system_keymint_license"],
 }
 
-rust_library_host {
+rust_library {
     name: "libkmr_ta",
     crate_name: "kmr_ta",
     srcs: ["src/lib.rs"],
     edition: "2021",
-    lints: "vendor",
+    lints: "android",
     vendor_available: true,
+    host_supported: true,
     rustlibs: [
         "libciborium",
         "libciborium_io",
@@ -33,14 +34,44 @@ rust_library_host {
         "libkmr_wire",
         "liblog_rust",
         "libspki",
-        "libx509_cert"
+        "libx509_cert",
     ],
     proc_macros: [
         "libkmr_derive",
     ],
 }
 
-rust_test_host {
+rust_library_rlib {
+    name: "libkmr_ta_nostd",
+    crate_name: "kmr_ta",
+    srcs: ["src/lib.rs"],
+    edition: "2021",
+    lints: "android",
+    vendor_available: true,
+    rustlibs: [
+        "libciborium_nostd",
+        "libciborium_io_nostd",
+        "libcoset_nostd",
+        "libder_nostd",
+        "libflagset_nostd",
+        "libkmr_common_nostd",
+        "libkmr_wire_nostd",
+        "liblog_rust_nostd",
+        "libspki_nostd",
+        "libx509_cert_nostd",
+    ],
+    proc_macros: [
+        "libkmr_derive",
+    ],
+    prefer_rlib: true,
+    no_stdlibs: true,
+    stdlibs: [
+        "libcompiler_builtins.rust_sysroot",
+        "libcore.rust_sysroot",
+    ],
+}
+
+rust_test {
     name: "libkmr_ta_test",
     crate_name: "kmr_ta_test",
     srcs: ["src/lib.rs"],
@@ -55,10 +86,30 @@ rust_test_host {
         "libkmr_wire",
         "liblog_rust",
         "libspki",
-        "libx509_cert"
+        "libx509_cert",
     ],
     proc_macros: [
         "libkmr_derive",
     ],
     test_suites: ["general-tests"],
+}
+
+rust_fuzz {
+    name: "libkmr_ta_fuzz_keydescription",
+    srcs: ["fuzz/fuzz_targets/keydescription.rs"],
+    rustlibs: [
+        "libder",
+        "libkmr_ta",
+    ],
+    host_supported: true,
+    fuzz_config: {
+        cc: [
+            "drysdale@google.com",
+            "hasinitg@google.com",
+        ],
+        componentid: 1084733,
+        hotlists: ["4271696"],
+        fuzz_on_haiku_device: true,
+        fuzz_on_haiku_host: true,
+    },
 }

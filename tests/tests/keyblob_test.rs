@@ -1,3 +1,17 @@
+// Copyright 2022, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // Integration test.
 #![cfg(soong)]
 
@@ -16,8 +30,9 @@ fn test_encrypted_keyblob_roundtrip() {
     let aes = BoringAes;
     let hmac = BoringHmac;
     let mut rng = BoringRng;
-    let mut root_key = crypto::RawKeyMaterial(vec![0u8; 32]);
+    let mut root_key = crypto::hmac::Key(vec![0u8; 32]);
     rng.fill_bytes(&mut root_key.0);
+    let root_key = crypto::OpaqueOr::Explicit(root_key);
     let plaintext_keyblob = keyblob::PlaintextKeyBlob {
         characteristics: vec![keymint::KeyCharacteristics {
             security_level: keymint::SecurityLevel::TrustedEnvironment,
@@ -44,6 +59,7 @@ fn test_encrypted_keyblob_roundtrip() {
         &[],
         plaintext_keyblob.clone(),
         hidden.clone(),
+        keyblob::SlotPurpose::KeyGeneration,
     )
     .unwrap();
 
