@@ -53,14 +53,20 @@ const MAX_ATTESTATION_CHALLENGE_LEN: usize = 128;
 /// ```
 #[derive(Debug, Clone, Sequence)]
 pub struct SecureKeyWrapper<'a> {
+    /// Version of this structure.
     pub version: i32,
+    /// Encrypted transport key.
     #[asn1(type = "OCTET STRING")]
     pub encrypted_transport_key: &'a [u8],
+    /// IV to use for decryption.
     #[asn1(type = "OCTET STRING")]
     pub initialization_vector: &'a [u8],
+    /// Key parameters and description.
     pub key_description: KeyDescription<'a>,
+    /// Ciphertext of the imported key.
     #[asn1(type = "OCTET STRING")]
     pub encrypted_key: &'a [u8],
+    /// Tag value.
     #[asn1(type = "OCTET STRING")]
     pub tag: &'a [u8],
 }
@@ -69,7 +75,7 @@ const SECURE_KEY_WRAPPER_VERSION: i32 = 0;
 
 /// Contents of key description.
 ///
-/// ``asn1
+/// ```asn1
 /// KeyDescription ::= SEQUENCE {
 ///     keyFormat    INTEGER, # Values from KeyFormat enum
 ///     keyParams    AuthorizationList, # See cert.rs
@@ -77,7 +83,9 @@ const SECURE_KEY_WRAPPER_VERSION: i32 = 0;
 /// ```
 #[derive(Debug, Clone, Sequence)]
 pub struct KeyDescription<'a> {
+    /// Format of imported key.
     pub key_format: i32,
+    /// Key parameters.
     pub key_params: cert::AuthorizationList<'a>,
 }
 
