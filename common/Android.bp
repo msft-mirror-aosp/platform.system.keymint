@@ -50,7 +50,6 @@ rust_library {
     ],
 }
 
-
 rust_library_rlib {
     name: "libkmr_common_nostd",
     crate_name: "kmr_common",
@@ -107,17 +106,19 @@ rust_binary_host {
     ],
 }
 
-// The fuzzer target cannot be built for the device because some
-// of the dependencies have restricted visibility.
-rust_fuzz_host {
+rust_fuzz {
     name: "libkmr_common_fuzz_keyblob",
     srcs: ["fuzz/fuzz_targets/keyblob.rs"],
     rustlibs: ["libkmr_common"],
+    host_supported: true,
     fuzz_config: {
-        cc: ["drysdale@google.com", "hasinitg@google.com"],
+        cc: [
+            "drysdale@google.com",
+            "hasinitg@google.com",
+        ],
         componentid: 1084733,
         hotlists: ["4271696"],
-        fuzz_on_haiku_device: false,
+        fuzz_on_haiku_device: true,
         fuzz_on_haiku_host: true,
     },
 }
