@@ -137,7 +137,7 @@ pub trait Aes: Send {
 
     /// Create an AES operation.  For block mode operations with no padding
     /// ([`aes::CipherMode::EcbNoPadding`] and [`aes::CipherMode::CbcNoPadding`]) the operation
-    /// implementation should reject (with [`ErrorCode::InvalidInputLength`]) input data that does
+    /// implementation should reject (with `ErrorCode::InvalidInputLength`) input data that does
     /// not end up being a multiple of the block size.
     fn begin(
         &self,
@@ -179,7 +179,7 @@ pub trait Des: Send {
 
     /// Create a DES operation.  For block mode operations with no padding
     /// ([`des::Mode::EcbNoPadding`] and [`des::Mode::CbcNoPadding`]) the operation implementation
-    /// should reject (with [`ErrorCode::InvalidInputLength`]) input data that does not end up being
+    /// should reject (with `ErrorCode::InvalidInputLength`) input data that does not end up being
     /// a multiple of the block size.
     fn begin(
         &self,
@@ -283,7 +283,7 @@ pub trait Rsa: Send {
     ) -> Result<Box<dyn AccumulatingOperation>, Error>;
 
     /// Create an RSA signing operation.  For [`rsa::SignMode::Pkcs1_1_5Padding(Digest::None)`] the
-    /// implementation should reject (with [`ErrorCode::InvalidInputLength`]) accumulated input that
+    /// implementation should reject (with `ErrorCode::InvalidInputLength`) accumulated input that
     /// is larger than the size of the RSA key less overhead
     /// ([`rsa::PKCS1_UNDIGESTED_SIGNATURE_PADDING_OVERHEAD`]).
     fn begin_sign(
@@ -396,7 +396,7 @@ pub trait Ec: Send {
     fn begin_agree(&self, key: OpaqueOr<ec::Key>) -> Result<Box<dyn AccumulatingOperation>, Error>;
 
     /// Create an EC signing operation.  For Ed25519 signing operations, the implementation should
-    /// reject (with [`ErrorCode::InvalidInputLength`]) accumulated data that is larger than
+    /// reject (with `ErrorCode::InvalidInputLength`) accumulated data that is larger than
     /// [`ec::MAX_ED25519_MSG_SIZE`].
     fn begin_sign(
         &self,
@@ -582,7 +582,7 @@ impl Hmac for NoOpHmac {
     }
 }
 
-/// Stub implementation of [`Cmac`].
+/// Stub implementation of [`AesCmac`].
 pub struct NoOpAesCmac;
 impl AesCmac for NoOpAesCmac {
     fn begin(&self, _key: OpaqueOr<aes::Key>) -> Result<Box<dyn AccumulatingOperation>, Error> {
