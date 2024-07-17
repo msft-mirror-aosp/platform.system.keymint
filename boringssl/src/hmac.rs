@@ -67,7 +67,7 @@ impl crypto::Hmac for BoringHmac {
     }
 }
 
-/// [`crypto::HmacOperation`] implementation based on BoringSSL.
+/// HMAC operation based on BoringSSL.
 ///
 /// This implementation uses the `unsafe` wrappers around `HMAC_*` functions directly, because
 /// BoringSSL does not support the `EVP_PKEY_HMAC` implementations that are used in the rust-openssl
