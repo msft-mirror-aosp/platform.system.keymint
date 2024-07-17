@@ -185,7 +185,7 @@ impl crypto::Ec for BoringEc {
     }
 }
 
-/// [`crypto::EcAgreeOperation`] based on BoringSSL.
+/// ECDH operation based on BoringSSL.
 pub struct BoringEcAgreeOperation {
     key: Key,
     pending_input: Vec<u8>, // Limited to `max_size` below.
@@ -261,7 +261,7 @@ impl crypto::AccumulatingOperation for BoringEcAgreeOperation {
     }
 }
 
-/// [`crypto::EcSignOperation`] based on BoringSSL, when an external digest is used.
+/// ECDSA signing operation based on BoringSSL, when an external digest is used.
 pub struct BoringEcDigestSignOperation {
     // Safety: `pkey` internally holds a pointer to BoringSSL-allocated data (`EVP_PKEY`),
     // as do both of the raw pointers.  This means that this item stays valid under moves,
@@ -349,7 +349,7 @@ impl crypto::AccumulatingOperation for BoringEcDigestSignOperation {
     }
 }
 
-/// [`crypto::EcSignOperation`] based on BoringSSL, when data is undigested.
+/// ECDSA signing operation based on BoringSSL, when data is undigested.
 pub struct BoringEcUndigestSignOperation {
     ec_key: openssl::ec::EcKey<openssl::pkey::Private>,
     pending_input: Vec<u8>,
@@ -386,7 +386,7 @@ impl crypto::AccumulatingOperation for BoringEcUndigestSignOperation {
     }
 }
 
-/// [`crypto::EcSignOperation`] based on BoringSSL for Ed25519.
+/// EdDSA signing operation based on BoringSSL for Ed25519.
 pub struct BoringEd25519SignOperation {
     pkey: openssl::pkey::PKey<openssl::pkey::Private>,
     pending_input: Vec<u8>,
