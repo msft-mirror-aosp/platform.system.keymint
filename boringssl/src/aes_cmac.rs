@@ -67,7 +67,7 @@ impl crypto::AesCmac for BoringAesCmac {
     }
 }
 
-/// [`crypto::AesCmacOperation`] implementation based on BoringSSL.
+/// AES-CMAC implementation based on BoringSSL.
 ///
 /// This implementation uses the `unsafe` wrappers around `CMAC_*` functions directly, because
 /// BoringSSL does not support the `EVP_PKEY_CMAC` implementations that are used in the rust-openssl
