@@ -171,7 +171,7 @@ BoringSSL-based implementations are available for all of the above (except for s
 
 The KeyMint TA requires implementations of traits that involve interaction with device-specific
 features or provisioned information, in the form of implementations of the various Rust traits held
-in [`kmr_hal::device`](hal/src/device.rs).
+in [`kmr_ta::device`](ta/src/device.rs).
 
 **Checklist:**
 
@@ -179,7 +179,7 @@ in [`kmr_hal::device`](hal/src/device.rs).
 - [ ] Attestation key / chain retrieval implementation (optional).
 - [ ] Attestation device ID retrieval implementation.
 - [ ] Retrieval of BCC and DICE artefacts.
-- [ ] Secure storage implementation (optional).
+- [ ] Secure secret storage (for rollback-resistant keys) implementation (optional).
 - [ ] Bootloader status retrieval (optional)
 - [ ] Storage key wrapping integration (optional).
 - [ ] Trusted user presence indication (optional).
