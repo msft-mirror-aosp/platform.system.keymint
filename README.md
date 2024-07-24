@@ -2,12 +2,12 @@
 
 This repository holds a reference implementation of the Android
 [KeyMint
-HAL](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/keymint/aidl/android/hardware/security/keymint/IKeyMintDevice.aidl?q=IKeyMintDevice.aidl),
+HAL](https://cs.android.com/android/platform/superproject/main/+/main:hardware/interfaces/security/keymint/aidl/android/hardware/security/keymint/IKeyMintDevice.aidl),
 including closely related HAL interfaces:
 
-- [`IRemotelyProvisionedComponent`](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/rkp/aidl/android/hardware/security/keymint/IRemotelyProvisionedComponent.aidl)
-- [`ISharedSecret`](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/sharedsecret/aidl/android/hardware/security/sharedsecret/ISharedSecret.aidl)
-- [`ISecureClock`](https://cs.android.com/android/platform/superproject/+/master:hardware/interfaces/security/secureclock/aidl/android/hardware/security/secureclock/ISecureClock.aidl)
+- [`IRemotelyProvisionedComponent`](https://cs.android.com/android/platform/superproject/main/+/main:hardware/interfaces/security/rkp/aidl/android/hardware/security/keymint/IRemotelyProvisionedComponent.aidl)
+- [`ISharedSecret`](https://cs.android.com/android/platform/superproject/main/+/main:hardware/interfaces/security/sharedsecret/aidl/android/hardware/security/sharedsecret/ISharedSecret.aidl)
+- [`ISecureClock`](https://cs.android.com/android/platform/superproject/main/+/main:hardware/interfaces/security/secureclock/aidl/android/hardware/security/secureclock/ISecureClock.aidl)
 
 ## Repository Structure
 
@@ -103,7 +103,7 @@ requests to the TA as request/response pairs.
 - [ ] Populate userspace environment information at start of day, using `kmr_hal::send_hal_info()`.
 
 The Cuttlefish implementation of the [KeyMint/Rust HAL
-service](https://cs.android.com/android/platform/superproject/+/master:device/google/cuttlefish/guest/hals/keymint/rust/src/keymint_hal_main.rs)
+service](https://cs.android.com/android/platform/superproject/main/+/main:device/google/cuttlefish/guest/hals/keymint/rust/src/keymint_hal_main.rs)
 provides an example of all of the above.
 
 ### TA Driver
@@ -130,7 +130,7 @@ program that:
     - [ ] Trigger call to `kmr_ta::KeyMintTa::set_boot_info` on receipt of boot info.
 
 The Cuttlefish implementation of the [KeyMint/Rust
-TA](https://cs.android.com/android/platform/superproject/+/master:device/google/cuttlefish/host/commands/secure_env_rust/secure_env.rs)
+TA](https://cs.android.com/android/platform/superproject/main/+/main:device/google/cuttlefish/host/commands/secure_env/rust/lib.rs)
 provides an example of all of the above.
 
 ### Bootloader
@@ -143,6 +143,20 @@ and send a `kmr_wire::SetBootInfoRequest` message to do this.
 
 - [ ] Implementation of communication channel from bootloader to TA.
 - [ ] Trigger for and population of `kmr_wire::SetBootInfoRequest` message.
+
+### Authenticators
+
+KeyMint supports auth-bound keys that can only be used when an appropriate hardware authentication
+token (HAT) is presented. Secure authenticators such as Gatekeeper or Fingerprint produce these
+HATs, and validation of them requires that:
+
+- [ ] KeyMint and the authenticators share a common monotonic time source.
+- [ ] The authenticators have access to the (per-boot) HMAC signing key, via one of:
+   - [ ] The authenticator retrieves the HMAC key from KeyMint via a communication mechanism that is
+         completely internal to the secure environment, using `KeyMintTa::get_hmac_key`, or
+   - [ ] The authenticator also implements the `ISharedSecret` HAL, and joins in the HMAC key
+         derivation process.  This requires that the authenticator have access to the pre-shared key
+         that is used as the basis of the derivation process.
 
 ### Cryptographic Abstractions
 
@@ -171,15 +185,15 @@ BoringSSL-based implementations are available for all of the above (except for s
 
 The KeyMint TA requires implementations of traits that involve interaction with device-specific
 features or provisioned information, in the form of implementations of the various Rust traits held
-in [`kmr_hal::device`](hal/src/device.rs).
+in [`kmr_ta::device`](ta/src/device.rs).
 
 **Checklist:**
 
 - [ ] Root key retrieval implementation.
-- [ ] Attestation key / chain retrieval implementation.
+- [ ] Attestation key / chain retrieval implementation (optional).
 - [ ] Attestation device ID retrieval implementation.
 - [ ] Retrieval of BCC and DICE artefacts.
-- [ ] Secure storage implementation (optional).
+- [ ] Secure secret storage (for rollback-resistant keys) implementation (optional).
 - [ ] Bootloader status retrieval (optional)
 - [ ] Storage key wrapping integration (optional).
 - [ ] Trusted user presence indication (optional).
