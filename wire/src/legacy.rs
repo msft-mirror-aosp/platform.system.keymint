@@ -428,8 +428,8 @@ pub struct ConfigureVerifiedBootInfoResponse {}
 #[derive(Clone, PartialEq, Eq, LegacySerialize, ZeroizeOnDrop)]
 pub struct SetAttestationIdsRequest {
     pub brand: Vec<u8>,
-    pub product: Vec<u8>,
     pub device: Vec<u8>,
+    pub product: Vec<u8>,
     pub serial: Vec<u8>,
     pub imei: Vec<u8>,
     pub meid: Vec<u8>,
