@@ -130,7 +130,8 @@ impl OpaqueOr<Key> {
         buf.try_extend_from_slice(&pub_key)?;
         Ok(SubjectPublicKeyInfo {
             algorithm: AlgorithmIdentifier { oid: X509_OID, parameters: Some(der::AnyRef::NULL) },
-            subject_public_key: BitStringRef::from_bytes(buf).unwrap(),
+            subject_public_key: BitStringRef::from_bytes(buf)
+                .map_err(|e| km_err!(UnknownError, "invalid bitstring: {e:?}"))?,
         })
     }
 }
