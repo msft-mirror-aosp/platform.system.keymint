@@ -129,7 +129,7 @@ impl crypto::Aes for BoringAes {
     }
 }
 
-/// [`crypto::AesOperation`] implementation based on BoringSSL.
+/// AES operation based on BoringSSL.
 pub struct BoringAesOperation {
     crypter: openssl::symm::Crypter,
 }
@@ -153,7 +153,7 @@ impl crypto::EmittingOperation for BoringAesOperation {
     }
 }
 
-/// [`crypto::AesGcmEncryptOperation`] implementation based on BoringSSL.
+/// AES-GCM encrypt operation based on BoringSSL.
 pub struct BoringAesGcmEncryptOperation {
     mode: crypto::aes::GcmMode,
     inner: BoringAesOperation,
@@ -187,7 +187,7 @@ impl crypto::EmittingOperation for BoringAesGcmEncryptOperation {
     }
 }
 
-/// [`crypto::AesGcmDecryptOperation`] implementation based on BoringSSL.
+/// AES-GCM decrypt operation based on BoringSSL.
 pub struct BoringAesGcmDecryptOperation {
     crypter: openssl::symm::Crypter,
 

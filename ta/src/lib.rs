@@ -45,7 +45,7 @@ use log::{error, info, trace, warn};
 mod cert;
 mod clock;
 pub mod device;
-mod keys;
+pub mod keys;
 mod operation;
 pub mod rkp;
 mod secret;
@@ -543,6 +543,10 @@ impl KeyMintTa {
     pub fn set_boot_info(&mut self, boot_info: keymint::BootInfo) -> Result<(), Error> {
         if !self.in_early_boot {
             error!("Rejecting attempt to set boot info {:?} after early boot", boot_info);
+            return Err(km_err!(
+                EarlyBootEnded,
+                "attempt to set boot info to {boot_info:?} after early boot"
+            ));
         }
         if let Some(existing_boot_info) = &self.boot_info {
             if *existing_boot_info == boot_info {
@@ -552,7 +556,7 @@ impl KeyMintTa {
                 );
             } else {
                 return Err(km_err!(
-                    InvalidArgument,
+                    RootOfTrustAlreadySet,
                     "attempt to set boot info to {:?} but already set to {:?}",
                     boot_info,
                     existing_boot_info
