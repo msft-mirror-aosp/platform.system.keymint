@@ -65,7 +65,7 @@ impl crypto::Des for BoringDes {
     }
 }
 
-/// [`crypto::DesOperation`] implementation based on BoringSSL.
+/// DES operation based on BoringSSL.
 pub struct BoringDesOperation {
     crypter: openssl::symm::Crypter,
 }
