@@ -119,7 +119,7 @@ impl crypto::Rsa for BoringRsa {
     }
 }
 
-/// [`crypto::RsaDecryptOperation`] based on BoringSSL.
+/// RSA decryption operation based on BoringSSL.
 pub struct BoringRsaDecryptOperation {
     key: crypto::rsa::Key,
     mode: DecryptionMode,
@@ -182,7 +182,7 @@ impl crypto::AccumulatingOperation for BoringRsaDecryptOperation {
     }
 }
 
-/// [`crypto::RsaSignOperation`] based on BoringSSL, for when an external digest is used.
+/// RSA signing operation based on BoringSSL, for when an external digest is used.
 /// Directly uses FFI functions because [`openssl::sign::Signer`] requires a lifetime.
 pub struct BoringRsaDigestSignOperation {
     // Safety: `pkey` internally holds a pointer to BoringSSL-allocated data (`EVP_PKEY`),
@@ -286,7 +286,7 @@ impl crypto::AccumulatingOperation for BoringRsaDigestSignOperation {
     }
 }
 
-/// [`crypto::RsaSignOperation`] based on BoringSSL, for undigested data.
+/// RSA signing operation based on BoringSSL, for undigested data.
 pub struct BoringRsaUndigestSignOperation {
     rsa_key: openssl::rsa::Rsa<openssl::pkey::Private>,
     left_pad: bool,
