@@ -144,6 +144,20 @@ and send a `kmr_wire::SetBootInfoRequest` message to do this.
 - [ ] Implementation of communication channel from bootloader to TA.
 - [ ] Trigger for and population of `kmr_wire::SetBootInfoRequest` message.
 
+### Authenticators
+
+KeyMint supports auth-bound keys that can only be used when an appropriate hardware authentication
+token (HAT) is presented. Secure authenticators such as Gatekeeper or Fingerprint produce these
+HATs, and validation of them requires that:
+
+- [ ] KeyMint and the authenticators share a common monotonic time source.
+- [ ] The authenticators have access to the (per-boot) HMAC signing key, via one of:
+   - [ ] The authenticator retrieves the HMAC key from KeyMint via a communication mechanism that is
+         completely internal to the secure environment, using `KeyMintTa::get_hmac_key`, or
+   - [ ] The authenticator also implements the `ISharedSecret` HAL, and joins in the HMAC key
+         derivation process.  This requires that the authenticator have access to the pre-shared key
+         that is used as the basis of the derivation process.
+
 ### Cryptographic Abstractions
 
 The KeyMint TA requires implementations for low-level cryptographic primitives to be provided, in
@@ -171,7 +185,7 @@ BoringSSL-based implementations are available for all of the above (except for s
 
 The KeyMint TA requires implementations of traits that involve interaction with device-specific
 features or provisioned information, in the form of implementations of the various Rust traits held
-in [`kmr_hal::device`](hal/src/device.rs).
+in [`kmr_ta::device`](ta/src/device.rs).
 
 **Checklist:**
 
@@ -179,7 +193,7 @@ in [`kmr_hal::device`](hal/src/device.rs).
 - [ ] Attestation key / chain retrieval implementation (optional).
 - [ ] Attestation device ID retrieval implementation.
 - [ ] Retrieval of BCC and DICE artefacts.
-- [ ] Secure storage implementation (optional).
+- [ ] Secure secret storage (for rollback-resistant keys) implementation (optional).
 - [ ] Bootloader status retrieval (optional)
 - [ ] Storage key wrapping integration (optional).
 - [ ] Trusted user presence indication (optional).
