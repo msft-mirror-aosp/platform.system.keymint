@@ -235,6 +235,7 @@ pub trait SecureDeletionSecretManager {
 /// RAII class to hold a secure deletion slot.  The slot is deleted when the holder is dropped.
 struct SlotHolder<'a> {
     mgr: &'a mut dyn SecureDeletionSecretManager,
+    // Invariant: `slot` is non-`None` except on destruction.
     slot: Option<SecureDeletionSlot>,
 }
 
@@ -261,7 +262,7 @@ impl<'a> SlotHolder<'a> {
 
     /// Acquire ownership of the secure deletion slot.
     fn consume(mut self) -> SecureDeletionSlot {
-        self.slot.take().unwrap()
+        self.slot.take().unwrap() // Safe: `is_some()` invariant
     }
 }
 
