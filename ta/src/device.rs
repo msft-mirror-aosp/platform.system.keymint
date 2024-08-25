@@ -221,6 +221,7 @@ pub trait RetrieveRpcArtifacts {
     /// - NIST signatures are encoded as (r||s), with each value left-padded with zeroes to
     ///   the coordinate length.  Note that this is a *different* format than is emitted by
     ///   the `kmr_common::crypto::Ec` trait.
+    ///
     /// (The `kmr_common::crypto::ec::to_cose_signature()` function can help with this.)
     fn sign_data(
         &self,

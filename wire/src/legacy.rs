@@ -25,24 +25,24 @@
 //! sort of envelope that identifies the message type.
 //!
 //! 1) For Trusty, this envelope is the `keymaster_message` struct from
-//! `system/core/trusty/keymaster/include/trusty_keymaster/ipc/keymaster_ipc.h`; this struct holds
-//! (and is serialized as):
+//!    `system/core/trusty/keymaster/include/trusty_keymaster/ipc/keymaster_ipc.h`; this struct holds
+//!    (and is serialized as):
 //!
-//! - A u32 indicating which command is involved, together with two low bits to encode whether the
-//!   message is a response, and a stop bit.  The command code values are taken from
-//!   `keymaster_command` in
-//!   `system/core/trusty/keymaster/include/trusty_keymaster/ipc/keymaster_ipc.h`.
-//! - The payload.
+//!    - A u32 indicating which command is involved, together with two low bits to encode whether the
+//!      message is a response, and a stop bit.  The command code values are taken from
+//!      `keymaster_command` in
+//!      `system/core/trusty/keymaster/include/trusty_keymaster/ipc/keymaster_ipc.h`.
+//!    - The payload.
 //!
 //! 2) For Cuttlefish, this envelope is the `keymaster_message` struct from
-//! `device/google/cuttlefish/common/libs/security/keymaster_channel.h`; this struct holds (and is
-//! serialized as):
+//!    `device/google/cuttlefish/common/libs/security/keymaster_channel.h`; this struct holds (and is
+//!    serialized as):
 //!
-//! - A u32 indicating which command is involved, together with a bit indicating if the message is a
-//!   response.  The command code values are taken from `AndroidKeymasterCommand` in
-//!   `system/keymaster/include/keymaster/android_keymaster_messages.h`.
-//! - A u32 indicating the size of the payload
-//! - The payload.
+//!    - A u32 indicating which command is involved, together with a bit indicating if the message is a
+//!      response.  The command code values are taken from `AndroidKeymasterCommand` in
+//!      `system/keymaster/include/keymaster/android_keymaster_messages.h`.
+//!    - A u32 indicating the size of the payload
+//!    - The payload.
 //!
 //! In addition to the common messages defined in `android_keymaster_messages.h`, Trusty includes
 //! additional messages defined in `app/keymaster/trusty_keymaster_messages.h`.
