@@ -100,7 +100,6 @@ impl<const N: usize> SecureDeletionSecretManager for InMemorySlotManager<N> {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Default)]
 struct FakeRng(u8);
 
