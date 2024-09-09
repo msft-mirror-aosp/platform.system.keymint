@@ -13,6 +13,8 @@
 // limitations under the License.
 
 //! In-memory secure deletion secret manager.
+//!
+//! Only suitable for development/testing (as secrets are lost on restart).
 
 use super::{SecureDeletionData, SecureDeletionSecretManager, SecureDeletionSlot, SlotPurpose};
 use crate::{crypto, km_err, Error};
@@ -96,20 +98,6 @@ impl<const N: usize> SecureDeletionSecretManager for InMemorySlotManager<N> {
         self.factory_secret = None;
         for idx in 0..N {
             self.slots[idx] = None;
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Default)]
-struct FakeRng(u8);
-
-impl crate::crypto::Rng for FakeRng {
-    fn add_entropy(&mut self, _data: &[u8]) {}
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        for b in dest {
-            *b = self.0;
-            self.0 += 1;
         }
     }
 }
