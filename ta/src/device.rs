@@ -72,7 +72,7 @@ pub trait RetrieveKeyMaterial {
     /// in any opaque context.
     fn root_kek(&self, context: &[u8]) -> Result<OpaqueOr<hmac::Key>, Error>;
 
-    /// Retrieve any opaque (but non-confidential) context needed for future calls to [`root_kek`].
+    /// Retrieve any opaque (but non-confidential) context needed for future calls to `root_kek`.
     /// Context should not include confidential data (it will be stored in the clear).
     fn kek_context(&self) -> Result<Vec<u8>, Error> {
         // Default implementation is to have an empty KEK retrieval context.
@@ -209,9 +209,9 @@ pub trait RetrieveRpcArtifacts {
     fn get_dice_info(&self, test_mode: rpc::TestMode) -> Result<DiceInfo, Error>;
 
     /// Sign the input data with the CDI leaf private key of the IRPC HAL implementation. In IRPC V2,
-    /// the `data` to be signed is the [`SignedMac_structure`] in ProtectedData.aidl, when signing
+    /// the `data` to be signed is the `SignedMac_structure` in ProtectedData.aidl, when signing
     /// the ephemeral MAC key used to authenticate the public keys. In IRPC V3, the `data` to be
-    /// signed is the [`SignedDataSigStruct`].
+    /// signed is the `SignedDataSigStruct`.
     /// If a particular implementation would like to return the signature in a COSE_Sign1 message,
     /// they can mark this unimplemented and override the default implementation in the
     /// `sign_data_in_cose_sign1` method below.
@@ -221,6 +221,7 @@ pub trait RetrieveRpcArtifacts {
     /// - NIST signatures are encoded as (r||s), with each value left-padded with zeroes to
     ///   the coordinate length.  Note that this is a *different* format than is emitted by
     ///   the `kmr_common::crypto::Ec` trait.
+    ///
     /// (The `kmr_common::crypto::ec::to_cose_signature()` function can help with this.)
     fn sign_data(
         &self,
@@ -287,12 +288,12 @@ pub enum CsrSigningAlgorithm {
 /// Public DICE artifacts.
 #[derive(Clone, Debug)]
 pub struct PubDiceArtifacts {
-    /// Certificates for the UDS Pub encoded in CBOR as per [`AdditionalDKSignatures`] structure in
-    /// ProtectedData.aidl for IRPC HAL version 2 and as per [`UdsCerts`] structure in IRPC HAL
+    /// Certificates for the UDS Pub encoded in CBOR as per `AdditionalDKSignatures` structure in
+    /// ProtectedData.aidl for IRPC HAL version 2 and as per `UdsCerts` structure in IRPC HAL
     /// version 3.
     pub uds_certs: Vec<u8>,
-    /// UDS Pub and the DICE certificates encoded in CBOR/COSE as per the [`Bcc`] structure
-    /// defined in ProtectedData.aidl for IRPC HAL version 2 and as per [`DiceCertChain`] structure
+    /// UDS Pub and the DICE certificates encoded in CBOR/COSE as per the `Bcc` structure
+    /// defined in ProtectedData.aidl for IRPC HAL version 2 and as per `DiceCertChain` structure
     /// in IRPC HAL version 3.
     pub dice_cert_chain: Vec<u8>,
 }
