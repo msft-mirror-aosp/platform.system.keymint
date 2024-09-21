@@ -58,6 +58,15 @@ const RPC_P256_KEYGEN_PARAMS: [KeyParam; 8] = [
 const MAX_CHALLENGE_SIZE_V2: usize = 64;
 
 impl KeyMintTa {
+    /// Return the UDS certs for the device, encoded in CBOR as per `AdditionalDKSignatures`
+    /// structure in ProtectedData.aidl for IRPC HAL version 2 and as per `UdsCerts` structure in
+    /// IRPC HAL version 3.
+    pub fn uds_certs(&self) -> Result<Vec<u8>, Error> {
+        let dice_info =
+            self.get_dice_info().ok_or_else(|| rpc_err!(Failed, "DICE info not available."))?;
+        try_to_vec(&dice_info.pub_dice_artifacts.uds_certs)
+    }
+
     /// Return the CBOR-encoded `DeviceInfo`.
     pub fn rpc_device_info(&self) -> Result<Vec<u8>, Error> {
         let info = self.rpc_device_info_cbor()?;
