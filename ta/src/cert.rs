@@ -52,7 +52,8 @@ use x509_cert::{
 pub const ATTESTATION_EXTENSION_OID: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.3.6.1.4.1.11129.2.1.17");
 
-/// Empty book key value to use in attestations.
+/// Empty value to use in the `RootOfTrust.verifiedBootKey` field in attestations
+/// if an empty value was passed to the bootloader.
 const EMPTY_BOOT_KEY: [u8; 32] = [0u8; 32];
 
 /// Build an ASN.1 DER-encodable `Certificate`.
