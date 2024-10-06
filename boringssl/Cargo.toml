@@ -19,3 +19,6 @@ openssl = "^0.10.36"
 
 [dev-dependencies]
 kmr-tests = "*"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(soong)'] }
