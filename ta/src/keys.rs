@@ -172,6 +172,8 @@ impl crate::KeyMintTa {
             if let Some(SigningInfo { attestation_info: Some((challenge, app_id)), .. }) = &info {
                 let unique_id = self.calculate_unique_id(app_id, params)?;
                 let boot_info = self.boot_info_hashed_key()?;
+                let additional_attestation_info =
+                    self.additional_attestation_info.values().cloned().collect::<Vec<_>>();
                 let attest_ext = cert::attestation_extension(
                     self.aidl_version as i32,
                     challenge,
@@ -182,6 +184,7 @@ impl crate::KeyMintTa {
                     chars,
                     &unique_id,
                     &boot_info,
+                    additional_attestation_info.as_slice(),
                 )?;
                 Some(
                     cert::asn1_der_encode(&attest_ext)
