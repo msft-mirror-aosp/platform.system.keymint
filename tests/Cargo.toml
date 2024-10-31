@@ -17,4 +17,7 @@ kmr-crypto-boring = "*"
 kmr-ta = "*"
 kmr-wire = "*"
 log = "^0.4"
-x509-cert = "0.1.0"
+x509-cert = "0.2.4"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(soong)'] }
