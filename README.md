@@ -169,35 +169,35 @@ an external implementation is not required (but can be provided if desired).
 
 **Checklist:**
 
-- [ ] RNG implementation.
-- [ ] Constant time comparison implementation.
-- [ ] AES implementation.
-- [ ] 3-DES implementation.
-- [ ] HMAC implementation.
-- [ ] RSA implementation.
-- [ ] EC implementation (including curve 25519 support).
-- [ ] AES-CMAC or CKDF implementation.
-- [ ] Secure time implementation.
+- [ ] RNG implementation: `Rng`.
+- [ ] Constant time comparison implementation: `ConstTimeEq`.
+- [ ] AES implementation: `Aes`.
+- [ ] 3-DES implementation: `Des`.
+- [ ] HMAC implementation: `Hmac`.
+- [ ] RSA implementation: `Rsa`.
+- [ ] EC implementation, including curve 25519 support: `Ec`.
+- [ ] AES-CMAC or CKDF implementation: `AesCmac`, `Ckdf`.
 
-BoringSSL-based implementations are available for all of the above (except for secure time).
+BoringSSL-based implementations are available for all of the above.
 
 ### Device Abstractions
 
 The KeyMint TA requires implementations of traits that involve interaction with device-specific
 features or provisioned information, in the form of implementations of the various Rust traits held
-in [`kmr_ta::device`](ta/src/device.rs).
+(mostly) in [`kmr_ta::device`](ta/src/device.rs).
 
 **Checklist:**
 
-- [ ] Root key retrieval implementation.
-- [ ] Attestation key / chain retrieval implementation (optional).
-- [ ] Attestation device ID retrieval implementation.
-- [ ] Retrieval of BCC and DICE artefacts.
-- [ ] Secure secret storage (for rollback-resistant keys) implementation (optional).
-- [ ] Bootloader status retrieval (optional)
-- [ ] Storage key wrapping integration (optional).
-- [ ] Trusted user presence indication (optional).
-- [ ] Legacy keyblob format converter (optional).
+- [ ] Secure time implementation (monotonic, shared with authenticators): `kmr_common::crypto::MonotonicClock`.
+- [ ] Root key(s) retrieval implementation: `RetrieveKeyMaterial`.
+- [ ] Attestation key / chain retrieval implementation (optional): `RetrieveCertSigningInfo`.
+- [ ] Attestation device ID retrieval implementation: `RetrieveAttestationIds`.
+- [ ] Retrieval of BCC and DICE artefacts: `RetrieveRpcArtefacts`.
+- [ ] Secure secret storage (for rollback-resistant keys) implementation (optional): `SecureDeletionSecretManager`.
+- [ ] Bootloader status retrieval (optional): `BootloaderStatus`.
+- [ ] Storage key wrapping integration (optional): `StorageKeyWrapper`.
+- [ ] Trusted user presence indication (optional): `TrustedUserPresence`.
+- [ ] Legacy keyblob format converter (optional): `LegacyKeyHandler`.
 
 ## Supporting Older Versions of the KeyMint HAL
 
