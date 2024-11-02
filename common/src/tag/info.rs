@@ -207,7 +207,7 @@ pub struct Info {
 /// Global "map" of tags to information about their behaviour.
 /// Encoded as an array to avoid allocation; lookup should only be slightly slower
 /// for this few entries.
-const INFO: [(Tag, Info); 60] = [
+const INFO: [(Tag, Info); 61] = [
     (
         Tag::Purpose,
         Info {
@@ -1128,6 +1128,24 @@ const INFO: [(Tag, Info); 60] = [
             lifetime: ValueLifetime::Variable,
             cert_gen: CertGenParam::NotRequired,
             bit_index: 59,
+        },
+    ),
+    (
+        Tag::ModuleHash,
+        Info {
+            name: "MODULE_HASH",
+            tt: TagType::Bytes,
+            ext_asn1_type: Some("OCTET STRING"),
+            user_can_specify: UserSpecifiable(false),
+            // The module hash is neither a key characteristic nor an operation parameter.
+            // The tag exists only to reserve a numeric value that can be used in the
+            // attestation extension record.
+            characteristic: Characteristic::NotKeyCharacteristic,
+            op_param: OperationParam::NotOperationParam,
+            keymint_auto_adds: AutoAddedCharacteristic(false),
+            lifetime: ValueLifetime::FixedAtStartup,
+            cert_gen: CertGenParam::NotRequired,
+            bit_index: 60,
         },
     ),
 ];
