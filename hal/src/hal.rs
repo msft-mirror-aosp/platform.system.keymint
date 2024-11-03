@@ -400,6 +400,8 @@ impl Fromm<wire::keymint::KeyParam> for keymint::KeyParameter::KeyParameter {
             KeyParam::CertificateSubject(v) => {
                 (Tag::CERTIFICATE_SUBJECT, KeyParameterValue::Blob(v))
             }
+            #[cfg(feature = "hal_v4")]
+            KeyParam::ModuleHash(v) => (Tag::MODULE_HASH, KeyParameterValue::Blob(v)),
         };
         Self { tag, value }
     }
@@ -713,6 +715,8 @@ impl TryFromm<&keymint::KeyParameter::KeyParameter> for Option<KeyParam> {
             keymint::Tag::Tag::CERTIFICATE_SUBJECT => {
                 Some(KeyParam::CertificateSubject(clone_blob!(val)?))
             }
+            #[cfg(feature = "hal_v4")]
+            keymint::Tag::Tag::MODULE_HASH => Some(KeyParam::ModuleHash(clone_blob!(val)?)),
 
             // Unsupported variants
             keymint::Tag::Tag::UNIQUE_ID
