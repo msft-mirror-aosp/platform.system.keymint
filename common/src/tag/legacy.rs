@@ -148,7 +148,8 @@ pub fn serialize(params: &[KeyParam]) -> Result<Vec<u8>, Error> {
             | KeyParam::Nonce(v)
             | KeyParam::RootOfTrust(v)
             | KeyParam::CertificateSerial(v)
-            | KeyParam::CertificateSubject(v) => {
+            | KeyParam::CertificateSubject(v)
+            | KeyParam::ModuleHash(v) => {
                 result.try_extend_from_slice(v)?;
                 blob_size += v.len() as u32;
             }
@@ -240,7 +241,8 @@ pub fn serialize(params: &[KeyParam]) -> Result<Vec<u8>, Error> {
             | KeyParam::Nonce(v)
             | KeyParam::RootOfTrust(v)
             | KeyParam::CertificateSerial(v)
-            | KeyParam::CertificateSubject(v) => {
+            | KeyParam::CertificateSubject(v)
+            | KeyParam::ModuleHash(v) => {
                 let blob_len = v.len() as u32;
                 result.try_extend_from_slice(&blob_len.to_ne_bytes())?;
                 result.try_extend_from_slice(&blob_offset.to_ne_bytes())?;
@@ -502,6 +504,9 @@ pub fn deserialize(data: &mut &[u8]) -> Result<Vec<KeyParam>, Error> {
             Tag::CertificateSubject => {
                 KeyParam::CertificateSubject(consume_blob(data, &mut next_blob_offset, blob_data)?)
             }
+            Tag::ModuleHash => {
+                KeyParam::ModuleHash(consume_blob(data, &mut next_blob_offset, blob_data)?)
+            }
             // Invalid variants.
             Tag::Invalid
             | Tag::HardwareType
@@ -589,6 +594,7 @@ pub fn param_compare(left: &KeyParam, right: &KeyParam) -> Ordering {
         (KeyParam::CertificateNotBefore(l), KeyParam::CertificateNotBefore(r)) => l.cmp(r),
         (KeyParam::CertificateNotAfter(l), KeyParam::CertificateNotAfter(r)) => l.cmp(r),
         (KeyParam::MaxBootLevel(l), KeyParam::MaxBootLevel(r)) => l.cmp(r),
+        (KeyParam::ModuleHash(l), KeyParam::ModuleHash(r)) => l.cmp(r),
 
         (left, right) => left.tag().cmp(&right.tag()),
     }
