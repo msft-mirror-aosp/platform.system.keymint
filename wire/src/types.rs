@@ -233,6 +233,14 @@ pub struct SendRootOfTrustRequest {
 #[derive(Debug, AsCborValue)]
 pub struct SendRootOfTrustResponse {}
 
+#[derive(Debug, AsCborValue)]
+pub struct SetAdditionalAttestationInfoRequest {
+    pub info: Vec<KeyParam>,
+}
+
+#[derive(Debug, AsCborValue)]
+pub struct SetAdditionalAttestationInfoResponse {}
+
 // IKeyMintOperation methods.  These ...Request structures include an extra `op_handle` field whose
 // value was returned in the `InternalBeginResult` type and which identifies the operation in
 // progress.
@@ -651,6 +659,7 @@ declare_req_rsp_enums! { KeyMintOperation  =>    (PerformOpReq, PerformOpRsp) {
     SetBootInfo = 0x82 =>                              (SetBootInfoRequest, SetBootInfoResponse),
     SetAttestationIds = 0x83 =>                        (SetAttestationIdsRequest, SetAttestationIdsResponse),
     SetHalVersion = 0x84 =>                            (SetHalVersionRequest, SetHalVersionResponse),
+    SetAdditionalAttestationInfo = 0x91 =>             (SetAdditionalAttestationInfoRequest, SetAdditionalAttestationInfoResponse),
 } }
 
 /// Indicate whether an operation is part of the `IRemotelyProvisionedComponent` HAL.
