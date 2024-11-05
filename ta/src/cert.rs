@@ -52,7 +52,8 @@ use x509_cert::{
 pub const ATTESTATION_EXTENSION_OID: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.3.6.1.4.1.11129.2.1.17");
 
-/// Empty book key value to use in attestations.
+/// Empty value to use in the `RootOfTrust.verifiedBootKey` field in attestations
+/// if an empty value was passed to the bootloader.
 const EMPTY_BOOT_KEY: [u8; 32] = [0u8; 32];
 
 /// Build an ASN.1 DER-encodable `Certificate`.
@@ -306,6 +307,7 @@ pub(crate) fn attestation_extension<'a>(
     chars: &'a [KeyCharacteristics],
     unique_id: &'a Vec<u8>,
     boot_info: &'a keymint::BootInfo,
+    additional_attestation_info: &'a [KeyParam],
 ) -> Result<AttestationExtension<'a>, Error> {
     let mut sw_chars: &[KeyParam] = &[];
     let mut hw_chars: &[KeyParam] = &[];
@@ -328,14 +330,21 @@ pub(crate) fn attestation_extension<'a>(
         keymint::SecurityLevel::Software => (params, &[]),
         _ => (&[], params),
     };
-    let sw_enforced =
-        AuthorizationList::new(sw_chars, sw_params, attestation_ids, None, Some(app_id))?;
+    let sw_enforced = AuthorizationList::new(
+        sw_chars,
+        sw_params,
+        attestation_ids,
+        None,
+        Some(app_id),
+        additional_attestation_info,
+    )?;
     let hw_enforced = AuthorizationList::new(
         hw_chars,
         hw_params,
         attestation_ids,
         Some(RootOfTrust::from(boot_info)),
         None,
+        &[],
     )?;
     let sec_level = SecurityLevel::try_from(security_level as u32)
         .map_err(|_| km_err!(InvalidArgument, "invalid security level {:?}", security_level))?;
@@ -399,6 +408,7 @@ pub(crate) fn attestation_extension<'a>(
 ///     bootPatchLevel             [719] EXPLICIT INTEGER OPTIONAL,
 ///     deviceUniqueAttestation    [720] EXPLICIT NULL OPTIONAL,
 ///     attestationIdSecondImei    [723] EXPLICIT OCTET_STRING OPTIONAL,
+///     moduleHash                 [724] EXPLICIT OCTET_STRING OPTIONAL,
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -407,6 +417,7 @@ pub struct AuthorizationList<'a> {
     pub keygen_params: Cow<'a, [KeyParam]>,
     pub rot_info: Option<KeyParam>,
     pub app_id: Option<KeyParam>,
+    pub additional_attestation_info: Cow<'a, [KeyParam]>,
 }
 
 /// Macro to check that a specified attestation ID matches the provisioned value.
@@ -439,6 +450,7 @@ impl<'a> AuthorizationList<'a> {
         attestation_ids: Option<&'a crate::AttestationIdInfo>,
         rot_info: Option<RootOfTrust<'a>>,
         app_id: Option<&'a [u8]>,
+        additional_attestation_info: &'a [KeyParam],
     ) -> Result<Self, Error> {
         check_attestation_id!(keygen_params, AttestationIdBrand, attestation_ids.map(|v| &v.brand));
         check_attestation_id!(
@@ -483,6 +495,7 @@ impl<'a> AuthorizationList<'a> {
                 Some(app_id) => Some(KeyParam::AttestationApplicationId(try_to_vec(app_id)?)),
                 None => None,
             },
+            additional_attestation_info: additional_attestation_info.into(),
         })
     }
 
@@ -499,6 +512,7 @@ impl<'a> AuthorizationList<'a> {
         let mut keygen_params = Vec::new();
         let mut rot: Option<KeyParam> = None;
         let mut attest_app_id: Option<KeyParam> = None;
+        let mut additional_attestation_info = Vec::new();
 
         // Divide key parameters into key characteristics and key generation parameters.
         for param in key_params {
@@ -516,6 +530,9 @@ impl<'a> AuthorizationList<'a> {
                 | KeyParam::AttestationIdModel(_) => {
                     keygen_params.try_push(param).map_err(der_alloc_err)?
                 }
+                KeyParam::ModuleHash(_) => {
+                    additional_attestation_info.try_push(param).map_err(der_alloc_err)?
+                }
                 _ => auths.try_push(param).map_err(der_alloc_err)?,
             }
         }
@@ -524,6 +541,7 @@ impl<'a> AuthorizationList<'a> {
             keygen_params: keygen_params.into(),
             rot_info: rot,
             app_id: attest_app_id,
+            additional_attestation_info: additional_attestation_info.into(),
         })
     }
 }
@@ -598,6 +616,7 @@ impl<'a> der::DecodeValue<'a> for AuthorizationList<'a> {
                 keygen_params: Vec::new().into(),
                 rot_info: None,
                 app_id: None,
+                additional_attestation_info: Vec::new().into(),
             });
         }
         if decoder.remaining_len() < header.length {
@@ -656,7 +675,8 @@ impl<'a> der::DecodeValue<'a> for AuthorizationList<'a> {
                 VendorPatchlevel,
                 BootPatchlevel,
                 DeviceUniqueAttestation,
-                AttestationIdSecondImei
+                AttestationIdSecondImei,
+                ModuleHash
             )
         );
 
@@ -874,6 +894,9 @@ fn decode_value_from_bytes(
         }
         Tag::DeviceUniqueAttestation => {
             key_param_from_asn1_null!(DeviceUniqueAttestation, tlv_bytes, key_params);
+        }
+        Tag::ModuleHash => {
+            key_param_from_asn1_octet_string!(ModuleHash, tlv_bytes, key_params);
         }
         _ => {
             // Note: `der::Error` or `der::ErrorKind` is not expressive enough for decoding
@@ -1115,7 +1138,8 @@ impl<'a> EncodeValue for AuthorizationList<'a> {
             + asn1_len(asn1_integer!(self.auths, VendorPatchlevel))?
             + asn1_len(asn1_integer!(self.auths, BootPatchlevel))?
             + asn1_len(asn1_null!(self.auths, DeviceUniqueAttestation))?
-            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdSecondImei))?;
+            + asn1_len(asn1_octet_string!(&self.keygen_params, AttestationIdSecondImei))?
+            + asn1_len(asn1_octet_string!(&self.additional_attestation_info, ModuleHash))?;
         length
     }
 
@@ -1179,7 +1203,7 @@ impl<'a> EncodeValue for AuthorizationList<'a> {
         asn1_val(asn1_integer!(self.auths, BootPatchlevel), writer)?;
         asn1_val(asn1_null!(self.auths, DeviceUniqueAttestation), writer)?;
         asn1_val(asn1_octet_string!(&self.keygen_params, AttestationIdSecondImei), writer)?;
-
+        asn1_val(asn1_octet_string!(&self.additional_attestation_info, ModuleHash), writer)?;
         Ok(())
     }
 }
@@ -1310,6 +1334,7 @@ impl From<keymint::VerifiedBootState> for VerifiedBootState {
 mod tests {
     use super::*;
     use crate::KeyMintHalVersion;
+    use alloc::vec;
 
     #[test]
     fn test_attest_ext_encode_decode() {
@@ -1321,7 +1346,7 @@ mod tests {
             keymint_security_level: sec_level,
             attestation_challenge: b"abc",
             unique_id: b"xxx",
-            sw_enforced: AuthorizationList::new(&[], &[], None, None, None).unwrap(),
+            sw_enforced: AuthorizationList::new(&[], &[], None, None, None, &[]).unwrap(),
             hw_enforced: AuthorizationList::new(
                 &[KeyParam::Algorithm(keymint::Algorithm::Ec)],
                 &[],
@@ -1333,6 +1358,7 @@ mod tests {
                     verified_boot_hash: &[0xee; 32],
                 }),
                 None,
+                &[],
             )
             .unwrap(),
         };
@@ -1392,6 +1418,7 @@ mod tests {
 
     #[test]
     fn test_authz_list_encode_decode() {
+        let additional_attestation_info = [KeyParam::ModuleHash(vec![0xaa; 32])];
         let authz_list = AuthorizationList::new(
             &[KeyParam::Algorithm(keymint::Algorithm::Ec)],
             &[],
@@ -1403,11 +1430,12 @@ mod tests {
                 verified_boot_hash: &[0xee; 32],
             }),
             None,
+            &additional_attestation_info,
         )
         .unwrap();
         let got = authz_list.to_der().unwrap();
         let want: &str = concat!(
-            "3055", // SEQUENCE len 55
+            "307b", // SEQUENCE len 123
             "a203", // EXPLICIT [2]
             "0201", // INTEGER len 1
             "03",   // 3 (Algorithm::Ec)
@@ -1424,6 +1452,11 @@ mod tests {
             "0420", // OCTET STRING len 32
             "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
             "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "bf8554",
+            "22",   // EXPLICIT [724] len 34
+            "0420", // OCTET STRING len 32
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         );
         // encode
         assert_eq!(hex::encode(&got), want);
@@ -1450,6 +1483,7 @@ mod tests {
                 verified_boot_hash: &[0xee; 32],
             }),
             None,
+            &[],
         )
         .unwrap();
         let got = authz_list.to_der().unwrap();
@@ -1517,6 +1551,7 @@ mod tests {
                 verified_boot_hash: &[0xee; 32],
             }),
             None,
+            &[],
         )
         .unwrap();
 
@@ -1541,6 +1576,7 @@ mod tests {
                 verified_boot_hash: &[0xee; 32],
             }),
             None,
+            &[],
         )
         .unwrap();
         let got = authz_list.to_der().unwrap();
@@ -1561,6 +1597,7 @@ mod tests {
                 verified_boot_hash: &[0xee; 32],
             }),
             None,
+            &[],
         )
         .unwrap();
         assert!(authz_list.to_der().is_err());
