@@ -18,8 +18,7 @@
 extern crate alloc;
 
 use alloc::{
-    boxed::Box, collections::BTreeMap, collections::BTreeSet, format, rc::Rc, string::String,
-    string::ToString, vec::Vec,
+    boxed::Box, collections::BTreeMap, format, rc::Rc, string::String, string::ToString, vec::Vec,
 };
 use core::cmp::Ordering;
 use core::mem::size_of;
@@ -85,6 +84,9 @@ const MAX_STRONGBOX_OPERATIONS: usize = 4;
 /// Maximum number of keys whose use count can be tracked.
 const MAX_USE_COUNTED_KEYS: usize = 32;
 
+/// Tags allowed in `KeyMintTa::additional_attestation_info`.
+const ALLOWED_ADDITIONAL_ATTESTATION_TAGS: &[Tag] = &[Tag::ModuleHash];
+
 /// Per-key ID use count.
 struct UseCount {
     key_id: KeyId,
@@ -138,10 +140,7 @@ pub struct KeyMintTa {
 
     /// Additional information to attest to, provided by Android. Refer to
     /// `IKeyMintDevice::setAdditionalAttestationInfo()`.
-    additional_attestation_info: BTreeMap<Tag, KeyParam>,
-
-    /// Tags allowed in additional_attestation_info.
-    allowed_additional_attestation_tags: BTreeSet<Tag>,
+    additional_attestation_info: Vec<KeyParam>,
 
     /// Attestation chain information, retrieved on first use.
     attestation_chain_info: RefCell<BTreeMap<device::SigningKeyType, AttestationChainInfo>>,
@@ -336,8 +335,7 @@ impl KeyMintTa {
             attestation_chain_info: RefCell::new(BTreeMap::new()),
             attestation_id_info: RefCell::new(None),
             dice_info: RefCell::new(None),
-            additional_attestation_info: BTreeMap::new(),
-            allowed_additional_attestation_tags: BTreeSet::from([Tag::ModuleHash]),
+            additional_attestation_info: Vec::new(),
         }
     }
 
@@ -1105,25 +1103,35 @@ impl KeyMintTa {
     fn set_additional_attestation_info(&mut self, info: Vec<KeyParam>) -> Result<(), Error> {
         for param in info {
             let tag = param.tag();
-            if !self.allowed_additional_attestation_tags.contains(&tag) {
+            if !ALLOWED_ADDITIONAL_ATTESTATION_TAGS.contains(&tag) {
+                warn!("ignoring non-allowlisted tag: {tag:?}");
                 continue;
             }
-            match self.additional_attestation_info.get(&tag) {
+            match self.additional_attestation_info.iter().find(|&x| x.tag() == tag) {
                 Some(value) if value == &param => {
-                    warn!("additional attestation info for: {:?} already set, ignoring repeated attempt to set same info", param);
+                    warn!(
+                        concat!(
+                            "additional attestation info for: {:?} already set, ignoring repeated",
+                            " attempt to set same info"
+                        ),
+                        param
+                    );
                     continue;
                 }
                 Some(value) => {
                     return Err(set_additional_attestation_info_err(
                         tag,
                         format!(
-                            "attempt to set additional attestation info for: {:?}, but that tag already has a different value set: {:?}",
+                            concat!(
+                            "attempt to set additional attestation info for: {:?}, but that tag",
+                            " already has a different value set: {:?}"
+                        ),
                             param, value
                         ),
                     ));
                 }
                 None => {
-                    self.additional_attestation_info.insert(tag, param.clone());
+                    self.additional_attestation_info.push(param.clone());
                 }
             }
         }
@@ -1269,12 +1277,12 @@ fn op_error_rsp(op: KeyMintOperation, err: Error) -> PerformOpResponse {
     }
 }
 
-/// Create an Error for set_additional_attestation_info failure that corresponds to the
-/// specified tag.
-pub fn set_additional_attestation_info_err(tag: Tag, err_msg: String) -> Error {
+/// Create an Error for [`KeyMintTa::set_additional_attestation_info`] failure that corresponds to
+/// the specified tag.
+fn set_additional_attestation_info_err(tag: Tag, err_msg: String) -> Error {
     match tag {
         Tag::ModuleHash => km_err!(ModuleHashAlreadySet, "{}", err_msg),
-        _ => km_err!(InvalidTag, "unexpected tag: {:?}", tag),
+        _ => km_err!(InvalidTag, "unexpected tag: {tag:?}"),
     }
 }
 
