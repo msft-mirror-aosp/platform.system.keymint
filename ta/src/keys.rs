@@ -182,6 +182,7 @@ impl crate::KeyMintTa {
                     chars,
                     &unique_id,
                     &boot_info,
+                    &self.additional_attestation_info,
                 )?;
                 Some(
                     cert::asn1_der_encode(&attest_ext)

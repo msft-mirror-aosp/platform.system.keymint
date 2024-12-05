@@ -271,6 +271,7 @@ pub enum ErrorCode {
     InvalidIssuerSubject = -83,
     BootLevelExceeded = -84,
     HardwareNotYetAvailable = -85,
+    ModuleHashAlreadySet = -86,
     Unimplemented = -100,
     VersionMismatch = -101,
     UnknownError = -1000,
@@ -405,6 +406,8 @@ pub enum KeyParam {
     CertificateNotBefore(DateTime),
     CertificateNotAfter(DateTime),
     MaxBootLevel(u32),
+    #[cfg(feature = "hal_v4")]
+    ModuleHash(Vec<u8>),
 }
 
 impl KeyParam {
@@ -470,6 +473,8 @@ impl KeyParam {
             KeyParam::CertificateNotBefore(_) => Tag::CertificateNotBefore,
             KeyParam::CertificateNotAfter(_) => Tag::CertificateNotAfter,
             KeyParam::MaxBootLevel(_) => Tag::MaxBootLevel,
+            #[cfg(feature = "hal_v4")]
+            KeyParam::ModuleHash(_) => Tag::ModuleHash,
         }
     }
 }
@@ -620,6 +625,8 @@ impl crate::AsCborValue for KeyParam {
                 KeyParam::CertificateNotAfter(<DateTime>::from_cbor_value(raw)?)
             }
             Tag::MaxBootLevel => KeyParam::MaxBootLevel(<u32>::from_cbor_value(raw)?),
+            #[cfg(feature = "hal_v4")]
+            Tag::ModuleHash => KeyParam::ModuleHash(<Vec<u8>>::from_cbor_value(raw)?),
 
             _ => return Err(crate::CborError::UnexpectedItem("tag", "known tag")),
         })
@@ -702,6 +709,8 @@ impl crate::AsCborValue for KeyParam {
             KeyParam::CertificateNotBefore(v) => (Tag::CertificateNotBefore, v.to_cbor_value()?),
             KeyParam::CertificateNotAfter(v) => (Tag::CertificateNotAfter, v.to_cbor_value()?),
             KeyParam::MaxBootLevel(v) => (Tag::MaxBootLevel, v.to_cbor_value()?),
+            #[cfg(feature = "hal_v4")]
+            KeyParam::ModuleHash(v) => (Tag::ModuleHash, v.to_cbor_value()?),
         };
         Ok(cbor::value::Value::Array(vec_try![tag.to_cbor_value()?, val]?))
     }
@@ -1056,6 +1065,15 @@ impl crate::AsCborValue for KeyParam {
             u32::cddl_ref(),
             "Tag_MaxBootLevel",
         );
+        #[cfg(feature = "hal_v4")]
+        {
+            result += &format!(
+                "    [{}, {}], ; {}\n",
+                Tag::ModuleHash as i32,
+                Vec::<u8>::cddl_ref(),
+                "Tag_ModuleHash",
+            );
+        }
         result += ")";
         Some(result)
     }
@@ -1188,6 +1206,8 @@ pub enum Tag {
     CertificateNotBefore = 1610613744,
     CertificateNotAfter = 1610613745,
     MaxBootLevel = 805307378,
+    #[cfg(feature = "hal_v4")]
+    ModuleHash = -1879047468,
 }
 try_from_n!(Tag);
 
