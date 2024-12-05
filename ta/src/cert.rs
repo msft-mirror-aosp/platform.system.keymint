@@ -251,14 +251,14 @@ pub(crate) fn basic_constraints_ext_value(ca_required: bool) -> BasicConstraints
 ///
 /// ```asn1
 /// KeyDescription ::= SEQUENCE {
-///     attestationVersion         INTEGER, # Value 300
-///     attestationSecurityLevel   SecurityLevel, # See below
-///     keyMintVersion             INTEGER, # Value 300
-///     keymintSecurityLevel       SecurityLevel, # See below
-///     attestationChallenge       OCTET_STRING, # Tag::ATTESTATION_CHALLENGE from attestParams
-///     uniqueId                   OCTET_STRING, # Empty unless key has Tag::INCLUDE_UNIQUE_ID
-///     softwareEnforced           AuthorizationList, # See below
-///     hardwareEnforced           AuthorizationList, # See below
+///     attestationVersion         INTEGER,
+///     attestationSecurityLevel   SecurityLevel,
+///     keyMintVersion             INTEGER,
+///     keymintSecurityLevel       SecurityLevel,
+///     attestationChallenge       OCTET_STRING,
+///     uniqueId                   OCTET_STRING,
+///     softwareEnforced           AuthorizationList,
+///     hardwareEnforced           AuthorizationList,
 /// }
 /// ```
 #[derive(Debug, Clone, Sequence, PartialEq)]
@@ -361,18 +361,18 @@ pub(crate) fn attestation_extension<'a>(
     Ok(ext)
 }
 
-/// Struct for creating ASN.1 DER-serialized `AuthorizationList`. The fields in the ASN1
+/// Struct for creating ASN.1 DER-serialized `AuthorizationList`. The fields in the ASN.1
 /// sequence are categorized into four fields in the struct based on their usage.
 /// ```asn1
 /// AuthorizationList ::= SEQUENCE {
 ///     purpose                    [1] EXPLICIT SET OF INTEGER OPTIONAL,
 ///     algorithm                  [2] EXPLICIT INTEGER OPTIONAL,
 ///     keySize                    [3] EXPLICIT INTEGER OPTIONAL,
-///     blockMode                  [4] EXPLICIT SET OF INTEGER OPTIONAL, -- symmetric only
+///     blockMode                  [4] EXPLICIT SET OF INTEGER OPTIONAL,  -- Symmetric keys only
 ///     digest                     [5] EXPLICIT SET OF INTEGER OPTIONAL,
 ///     padding                    [6] EXPLICIT SET OF INTEGER OPTIONAL,
-///     callerNonce                [7] EXPLICIT NULL OPTIONAL, -- symmetric only
-///     minMacLength               [8] EXPLICIT INTEGER OPTIONAL, -- symmetric only
+///     callerNonce                [7] EXPLICIT NULL OPTIONAL,  -- Symmetric keys only
+///     minMacLength               [8] EXPLICIT INTEGER OPTIONAL,  -- Symmetric keys only
 ///     ecCurve                    [10] EXPLICIT INTEGER OPTIONAL,
 ///     rsaPublicExponent          [200] EXPLICIT INTEGER OPTIONAL,
 ///     mgfDigest                  [203] EXPLICIT SET OF INTEGER OPTIONAL,
@@ -382,7 +382,7 @@ pub(crate) fn attestation_extension<'a>(
 ///     originationExpireDateTime  [401] EXPLICIT INTEGER OPTIONAL,
 ///     usageExpireDateTime        [402] EXPLICIT INTEGER OPTIONAL,
 ///     usageCountLimit            [405] EXPLICIT INTEGER OPTIONAL,
-///     userSecureId               [502] EXPLICIT INTEGER OPTIONAL, -- only used on import
+///     userSecureId               [502] EXPLICIT INTEGER OPTIONAL,  -- Only used on key import
 ///     noAuthRequired             [503] EXPLICIT NULL OPTIONAL,
 ///     userAuthType               [504] EXPLICIT INTEGER OPTIONAL,
 ///     authTimeout                [505] EXPLICIT INTEGER OPTIONAL,
@@ -408,6 +408,7 @@ pub(crate) fn attestation_extension<'a>(
 ///     bootPatchLevel             [719] EXPLICIT INTEGER OPTIONAL,
 ///     deviceUniqueAttestation    [720] EXPLICIT NULL OPTIONAL,
 ///     attestationIdSecondImei    [723] EXPLICIT OCTET_STRING OPTIONAL,
+///     -- moduleHash contains a SHA-256 hash of DER-encoded `Modules`
 ///     moduleHash                 [724] EXPLICIT OCTET_STRING OPTIONAL,
 /// }
 /// ```
@@ -1267,9 +1268,6 @@ impl<T: Encode> Encode for ExplicitTaggedValue<T> {
 ///  *     verifiedBootKey            OCTET_STRING,
 ///  *     deviceLocked               BOOLEAN,
 ///  *     verifiedBootState          VerifiedBootState,
-///  *     # verifiedBootHash must contain 32-byte value that represents the state of all binaries
-///  *     # or other components validated by verified boot.  Updating any verified binary or
-///  *     # component must cause this value to change.
 ///  *     verifiedBootHash           OCTET_STRING,
 ///  * }
 /// ```
