@@ -17,7 +17,9 @@
 #![no_std]
 extern crate alloc;
 
-use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, string::ToString, vec::Vec};
+use alloc::{
+    boxed::Box, collections::BTreeMap, format, rc::Rc, string::String, string::ToString, vec::Vec,
+};
 use core::cmp::Ordering;
 use core::mem::size_of;
 use core::{cell::RefCell, convert::TryFrom};
@@ -32,7 +34,7 @@ use kmr_wire::{
     coset::TaggedCborSerializable,
     keymint::{
         Digest, ErrorCode, HardwareAuthToken, KeyCharacteristics, KeyMintHardwareInfo, KeyOrigin,
-        KeyParam, SecurityLevel, VerifiedBootState, NEXT_MESSAGE_SIGNAL_FALSE,
+        KeyParam, SecurityLevel, Tag, VerifiedBootState, NEXT_MESSAGE_SIGNAL_FALSE,
         NEXT_MESSAGE_SIGNAL_TRUE,
     },
     rpc,
@@ -60,6 +62,8 @@ mod tests;
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyMintHalVersion {
+    /// V4 adds support for attestation of module information.
+    V4 = 400,
     /// V3 adds support for attestation of second IMEI value.
     V3 = 300,
     /// V2 adds support for curve 25519 and root-of-trust transfer.
@@ -69,7 +73,7 @@ pub enum KeyMintHalVersion {
 }
 
 /// Version code for current KeyMint.
-pub const KEYMINT_CURRENT_VERSION: KeyMintHalVersion = KeyMintHalVersion::V3;
+pub const KEYMINT_CURRENT_VERSION: KeyMintHalVersion = KeyMintHalVersion::V4;
 
 /// Maximum number of parallel operations supported when running as TEE.
 const MAX_TEE_OPERATIONS: usize = 16;
@@ -79,6 +83,9 @@ const MAX_STRONGBOX_OPERATIONS: usize = 4;
 
 /// Maximum number of keys whose use count can be tracked.
 const MAX_USE_COUNTED_KEYS: usize = 32;
+
+/// Tags allowed in `KeyMintTa::additional_attestation_info`.
+const ALLOWED_ADDITIONAL_ATTESTATION_TAGS: &[Tag] = &[Tag::ModuleHash];
 
 /// Per-key ID use count.
 struct UseCount {
@@ -130,6 +137,10 @@ pub struct KeyMintTa {
 
     /// Information provided by the HAL service once at start of day.
     hal_info: Option<HalInfo>,
+
+    /// Additional information to attest to, provided by Android. Refer to
+    /// `IKeyMintDevice::setAdditionalAttestationInfo()`.
+    additional_attestation_info: Vec<KeyParam>,
 
     /// Attestation chain information, retrieved on first use.
     attestation_chain_info: RefCell<BTreeMap<device::SigningKeyType, AttestationChainInfo>>,
@@ -324,6 +335,7 @@ impl KeyMintTa {
             attestation_chain_info: RefCell::new(BTreeMap::new()),
             attestation_id_info: RefCell::new(None),
             dice_info: RefCell::new(None),
+            additional_attestation_info: Vec::new(),
         }
     }
 
@@ -604,6 +616,7 @@ impl KeyMintTa {
             100 => KeyMintHalVersion::V1,
             200 => KeyMintHalVersion::V2,
             300 => KeyMintHalVersion::V3,
+            400 => KeyMintHalVersion::V4,
             _ => return Err(km_err!(InvalidArgument, "unsupported HAL version {}", aidl_version)),
         };
         info!("Set aidl_version to {:?}", self.aidl_version);
@@ -864,6 +877,14 @@ impl KeyMintTa {
                     Err(e) => op_error_rsp(SendRootOfTrustRequest::CODE, e),
                 }
             }
+            PerformOpReq::SetAdditionalAttestationInfo(req) => {
+                match self.set_additional_attestation_info(req.info) {
+                    Ok(_ret) => op_ok_rsp(PerformOpRsp::SetAdditionalAttestationInfo(
+                        SetAdditionalAttestationInfoResponse {},
+                    )),
+                    Err(e) => op_error_rsp(SetAdditionalAttestationInfoRequest::CODE, e),
+                }
+            }
 
             // IKeyMintOperation messages.
             PerformOpReq::OperationUpdateAad(req) => match self.op_update_aad(
@@ -1079,6 +1100,44 @@ impl KeyMintTa {
         Ok(())
     }
 
+    fn set_additional_attestation_info(&mut self, info: Vec<KeyParam>) -> Result<(), Error> {
+        for param in info {
+            let tag = param.tag();
+            if !ALLOWED_ADDITIONAL_ATTESTATION_TAGS.contains(&tag) {
+                warn!("ignoring non-allowlisted tag: {tag:?}");
+                continue;
+            }
+            match self.additional_attestation_info.iter().find(|&x| x.tag() == tag) {
+                Some(value) if value == &param => {
+                    warn!(
+                        concat!(
+                            "additional attestation info for: {:?} already set, ignoring repeated",
+                            " attempt to set same info"
+                        ),
+                        param
+                    );
+                    continue;
+                }
+                Some(value) => {
+                    return Err(set_additional_attestation_info_err(
+                        tag,
+                        format!(
+                            concat!(
+                            "attempt to set additional attestation info for: {:?}, but that tag",
+                            " already has a different value set: {:?}"
+                        ),
+                            param, value
+                        ),
+                    ));
+                }
+                None => {
+                    self.additional_attestation_info.push(param.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn convert_storage_key_to_ephemeral(&self, keyblob: &[u8]) -> Result<Vec<u8>, Error> {
         if let Some(sk_wrapper) = &self.dev.sk_wrapper {
             // Parse and decrypt the keyblob. Note that there is no way to provide extra hidden
@@ -1215,6 +1274,15 @@ fn op_error_rsp(op: KeyMintOperation, err: Error) -> PerformOpResponse {
             Error::Alloc(_) => ErrorCode::MemoryAllocationFailed,
         };
         error_rsp(hal_err as i32)
+    }
+}
+
+/// Create an Error for [`KeyMintTa::set_additional_attestation_info`] failure that corresponds to
+/// the specified tag.
+fn set_additional_attestation_info_err(tag: Tag, err_msg: String) -> Error {
+    match tag {
+        Tag::ModuleHash => km_err!(ModuleHashAlreadySet, "{}", err_msg),
+        _ => km_err!(InvalidTag, "unexpected tag: {tag:?}"),
     }
 }
 
