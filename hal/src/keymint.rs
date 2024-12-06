@@ -281,6 +281,21 @@ impl<T: SerializedChannel> keymint::IKeyMintDevice::IKeyMintDevice for Device<T>
             self.execute(SendRootOfTrustRequest { root_of_trust: root_of_trust.to_vec() })?;
         Ok(())
     }
+    #[cfg(feature = "hal_v4")]
+    fn setAdditionalAttestationInfo(
+        &self,
+        info: &[keymint::KeyParameter::KeyParameter],
+    ) -> binder::Result<()> {
+        let _rsp: SetAdditionalAttestationInfoResponse =
+            self.execute(SetAdditionalAttestationInfoRequest {
+                info: info
+                    .iter()
+                    .filter_map(|p| p.try_innto().transpose())
+                    .collect::<Result<Vec<KeyParam>, _>>()
+                    .map_err(failed_conversion)?,
+            })?;
+        Ok(())
+    }
 }
 
 /// Representation of an in-progress KeyMint operation on a `SerializedChannel`.
