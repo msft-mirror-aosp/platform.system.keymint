@@ -46,6 +46,7 @@ rust_library {
     features: [
         "hal_v2",
         "hal_v3",
+        "hal_v4",
     ],
     defaults: [
         "keymint_use_latest_hal_aidl_rust",
@@ -53,6 +54,24 @@ rust_library {
     ],
     rustlibs: [
         "libkmr_wire",
+    ],
+}
+
+rust_library {
+    name: "libkmr_hal_v3",
+    crate_name: "kmr_hal",
+    srcs: ["src/lib.rs"],
+    vendor_available: true,
+    features: [
+        "hal_v3",
+        "hal_v2",
+    ],
+    defaults: [
+        "kmr_hal_defaults",
+    ],
+    rustlibs: [
+        "android.hardware.security.keymint-V3-rust",
+        "libkmr_wire_hal_v3",
     ],
 }
 
@@ -94,6 +113,7 @@ rust_test {
     features: [
         "hal_v2",
         "hal_v3",
+        "hal_v4",
     ],
     defaults: [
         "keymint_use_latest_hal_aidl_rust",

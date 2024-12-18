@@ -178,6 +178,13 @@ impl<T: TrustySerialize> LegacyResult<T> {
     }
 }
 
+/// Serialize a Trusty response message in the form:
+/// - command code: 32-bit integer (native endian)
+/// - return code: 32-bit integer (native endian)
+/// - encoded response data (if return code is 0/Ok).
+///
+/// Note that some legacy response messages (e.g. [`GetDeviceInfoResponse`],
+/// [`GetAuthTokenKeyResponse`]) do not use this encoding format.
 fn serialize_trusty_response_message<T: TrustySerialize>(
     result: LegacyResult<T>,
 ) -> Result<Vec<u8>, Error> {
@@ -234,6 +241,9 @@ pub fn serialize_trusty_secure_rsp(rsp: TrustyPerformSecureOpRsp) -> Result<Vec<
             // TODO: update this to include explicit error code information if/when the C++ code
             // and library are updated.
             serialize_trusty_raw_rsp(rsp.raw_code(), device_ids)
+        }
+        TrustyPerformSecureOpRsp::GetUdsCerts(GetUdsCertsResponse { uds_certs: _ }) => {
+            serialize_trusty_response_message(LegacyResult::Ok(rsp))
         }
         TrustyPerformSecureOpRsp::SetAttestationIds(_) => {
             serialize_trusty_response_message(LegacyResult::Ok(rsp))
@@ -493,6 +503,13 @@ impl InnerSerialize for GetDeviceInfoResponse {
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, LegacySerialize)]
+pub struct GetUdsCertsRequest {}
+#[derive(Clone, PartialEq, Eq, Debug, LegacySerialize)]
+pub struct GetUdsCertsResponse {
+    pub uds_certs: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, LegacySerialize)]
 pub struct SetBootParamsRequest {
     pub os_version: u32,
     pub os_patchlevel: u32, // YYYYMM
@@ -617,6 +634,9 @@ macro_rules! declare_req_rsp_enums {
 // - an enum value with an explicit numeric value
 // - a request enum which has an operation code associated to each variant
 // - a response enum which has the same operation code associated to each variant.
+//
+// Numerical values for discriminants match the values in
+// system/keymaster/include/keymaster/android_keymaster_messages.h
 declare_req_rsp_enums! { CuttlefishKeymasterOperation => (CuttlefishPerformOpReq, CuttlefishPerformOpRsp) {
     ConfigureBootPatchlevel = 33 =>                      (ConfigureBootPatchlevelRequest, ConfigureBootPatchlevelResponse),
     ConfigureVerifiedBootInfo = 34 =>                    (ConfigureVerifiedBootInfoRequest, ConfigureVerifiedBootInfoResponse),
@@ -624,6 +644,9 @@ declare_req_rsp_enums! { CuttlefishKeymasterOperation => (CuttlefishPerformOpReq
 } }
 
 // Possible legacy Trusty Keymaster operation requests for the non-secure port.
+//
+// Numerical values for discriminants match the values in
+// trusty/user/app/keymaster/ipc/keymaster_ipc.h.
 declare_req_rsp_enums! { TrustyKeymasterOperation => (TrustyPerformOpReq, TrustyPerformOpRsp) {
     GetVersion = 7 =>                                (GetVersionRequest, GetVersionResponse),
     GetVersion2 = 28 =>                              (GetVersion2Request, GetVersion2Response),
@@ -642,9 +665,13 @@ declare_req_rsp_enums! { TrustyKeymasterOperation => (TrustyPerformOpReq, Trusty
 } }
 
 // Possible legacy Trusty Keymaster operation requests for the secure port.
+//
+// Numerical values for discriminants match the values in
+// trusty/user/base/interface/keymaster/include/interface/keymaster/keymaster.h
 declare_req_rsp_enums! { TrustyKeymasterSecureOperation  => (TrustyPerformSecureOpReq, TrustyPerformSecureOpRsp) {
     GetAuthTokenKey = 0 =>                                  (GetAuthTokenKeyRequest, GetAuthTokenKeyResponse),
     GetDeviceInfo = 1 =>                                    (GetDeviceInfoRequest, GetDeviceInfoResponse),
+    GetUdsCerts = 2 =>                                      (GetUdsCertsRequest, GetUdsCertsResponse),
     SetAttestationIds = 0xc000 =>                           (SetAttestationIdsRequest, SetAttestationIdsResponse),
 } }
 
@@ -769,6 +796,23 @@ mod tests {
         #[cfg(target_endian = "big")]
         let data = concat!("00000003", "010203");
 
+        let got_data = serialize_trusty_secure_rsp(msg).unwrap();
+        assert_eq!(hex::encode(got_data), data);
+    }
+    #[test]
+    fn test_get_uds_certs_rsp_serialize() {
+        let msg =
+            TrustyPerformSecureOpRsp::GetUdsCerts(GetUdsCertsResponse { uds_certs: vec![1, 2, 3] });
+        #[cfg(target_endian = "little")]
+        let data = concat!(
+            /* cmd */ "0b000000", /* rc */ "00000000", /* len */ "03000000",
+            /* data */ "010203"
+        );
+        #[cfg(target_endian = "big")]
+        let data = concat!(
+            /* cmd */ "0000000b", /* rc */ "00000000", /* len */ "00000003",
+            /* data */ "010203"
+        );
         let got_data = serialize_trusty_secure_rsp(msg).unwrap();
         assert_eq!(hex::encode(got_data), data);
     }

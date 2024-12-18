@@ -281,6 +281,21 @@ impl<T: SerializedChannel> keymint::IKeyMintDevice::IKeyMintDevice for Device<T>
             self.execute(SendRootOfTrustRequest { root_of_trust: root_of_trust.to_vec() })?;
         Ok(())
     }
+    #[cfg(feature = "hal_v4")]
+    fn setAdditionalAttestationInfo(
+        &self,
+        info: &[keymint::KeyParameter::KeyParameter],
+    ) -> binder::Result<()> {
+        let _rsp: SetAdditionalAttestationInfoResponse =
+            self.execute(SetAdditionalAttestationInfoRequest {
+                info: info
+                    .iter()
+                    .filter_map(|p| p.try_innto().transpose())
+                    .collect::<Result<Vec<KeyParam>, _>>()
+                    .map_err(failed_conversion)?,
+            })?;
+        Ok(())
+    }
 }
 
 /// Representation of an in-progress KeyMint operation on a `SerializedChannel`.
@@ -381,10 +396,9 @@ impl<T: SerializedChannel + 'static> keymint::IKeyMintOperation::IKeyMintOperati
             let batch_len = core::cmp::min(Self::MAX_DATA_SIZE, input.len());
             req.input = input[..batch_len].to_vec();
             input = &input[batch_len..];
-            let _rsp: UpdateAadResponse = self.execute(req).map_err(|e| {
+            let _rsp: UpdateAadResponse = self.execute(req).inspect_err(|_| {
                 // Any failure invalidates the operation
                 self.invalidate();
-                e
             })?;
         }
         Ok(())
@@ -410,9 +424,8 @@ impl<T: SerializedChannel + 'static> keymint::IKeyMintOperation::IKeyMintOperati
             let batch_len = core::cmp::min(Self::MAX_DATA_SIZE, input.len());
             req.input = input[..batch_len].to_vec();
             input = &input[batch_len..];
-            let rsp: UpdateResponse = self.execute(req).map_err(|e| {
+            let rsp: UpdateResponse = self.execute(req).inspect_err(|_| {
                 self.invalidate();
-                e
             })?;
             output.extend_from_slice(&rsp.ret);
         }
@@ -445,9 +458,8 @@ impl<T: SerializedChannel + 'static> keymint::IKeyMintOperation::IKeyMintOperati
                     timestamp_token: timestamp_token.clone(),
                 };
                 input = &input[MAX_DATA_SIZE..];
-                let rsp: UpdateResponse = self.execute(req).map_err(|e| {
+                let rsp: UpdateResponse = self.execute(req).inspect_err(|_| {
                     self.invalidate();
-                    e
                 })?;
                 output.extend_from_slice(&rsp.ret);
             }
