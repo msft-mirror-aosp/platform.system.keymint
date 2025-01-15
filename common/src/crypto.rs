@@ -504,7 +504,7 @@ impl<T: Hmac> Hkdf for T {
         out_len: usize,
     ) -> Result<Vec<u8>, Error> {
         let prk = &explicit!(prk)?.0;
-        let n = (out_len + SHA256_DIGEST_LEN - 1) / SHA256_DIGEST_LEN;
+        let n = out_len.div_ceil(SHA256_DIGEST_LEN);
         if n > 256 {
             return Err(km_err!(InvalidArgument, "overflow in hkdf"));
         }
@@ -538,7 +538,7 @@ impl<T: AesCmac> Ckdf for T {
         // Note: the variables i and l correspond to i and L in the standard.  See page 12 of
         // http://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-108.pdf.
 
-        let blocks: u32 = ((out_len + aes::BLOCK_SIZE - 1) / aes::BLOCK_SIZE) as u32;
+        let blocks: u32 = out_len.div_ceil(aes::BLOCK_SIZE) as u32;
         let l = (out_len * 8) as u32; // in bits
         let net_order_l = l.to_be_bytes();
         let zero_byte: [u8; 1] = [0];
