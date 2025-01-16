@@ -275,7 +275,7 @@ pub struct AttestationExtension<'a> {
     hw_enforced: AuthorizationList<'a>,
 }
 
-impl<'a> AssociatedOid for AttestationExtension<'a> {
+impl AssociatedOid for AttestationExtension<'_> {
     const OID: ObjectIdentifier = ATTESTATION_EXTENSION_OID;
 }
 
@@ -1080,7 +1080,7 @@ fn asn1_len<T: Encode>(val: Option<ExplicitTaggedValue<T>>) -> der::Result<Lengt
 
 impl<'a> Sequence<'a> for AuthorizationList<'a> {}
 
-impl<'a> EncodeValue for AuthorizationList<'a> {
+impl EncodeValue for AuthorizationList<'_> {
     fn value_len(&self) -> der::Result<Length> {
         let mut length = asn1_len(asn1_set_of_integer!(self.auths, Purpose))?
             + asn1_len(asn1_integer!(self.auths, Algorithm))?
