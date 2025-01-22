@@ -14,6 +14,7 @@
 
 //! KeyMint trusted application (TA) implementation.
 
+#![allow(clippy::empty_line_after_doc_comments)]
 #![no_std]
 extern crate alloc;
 
