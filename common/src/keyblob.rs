@@ -15,7 +15,8 @@
 //! Key blob manipulation functionality.
 
 use crate::{
-    contains_tag_value, crypto, km_err, tag, try_to_vec, vec_try, Error, FallibleAllocExt,
+    contains_tag_value, crypto, crypto::aes, km_err, tag, try_to_vec, vec_try, Error,
+    FallibleAllocExt,
 };
 use alloc::{
     format,
@@ -295,18 +296,20 @@ pub fn derive_kek(
     characteristics: Vec<KeyCharacteristics>,
     hidden: Vec<KeyParam>,
     sdd: Option<SecureDeletionData>,
-) -> Result<crypto::aes::Key, Error> {
+) -> Result<crypto::OpaqueOr<crypto::aes::Key>, Error> {
     let mut info = try_to_vec(key_derivation_input)?;
     info.try_extend_from_slice(&characteristics.into_vec()?)?;
     info.try_extend_from_slice(&hidden.into_vec()?)?;
     if let Some(sdd) = sdd {
         info.try_extend_from_slice(&sdd.into_vec()?)?;
     }
-    let data = match root_key {
-        crypto::OpaqueOr::Explicit(key_material) => kdf.hkdf(&[], &key_material.0, &info, 32)?,
-        key @ crypto::OpaqueOr::Opaque(_) => kdf.expand(key, &info, 32)?,
-    };
-    Ok(crypto::aes::Key::Aes256(data.try_into().unwrap(/* safe: len checked */)))
+
+    match root_key {
+        crypto::OpaqueOr::Explicit(key_material) => {
+            kdf.hkdf_aes(&[], &key_material.0, &info, aes::Variant::Aes256)
+        }
+        key @ crypto::OpaqueOr::Opaque(_) => kdf.expand_aes(key, &info, aes::Variant::Aes256),
+    }
 }
 
 /// Plaintext key blob.
@@ -392,7 +395,7 @@ pub fn encrypt(
             &[],
             move |pt, aad| {
                 let mut op = aes.begin_aead(
-                    kek.into(),
+                    kek,
                     crypto::aes::GcmMode::GcmTag16 { nonce: ZERO_NONCE },
                     crypto::SymmetricOperation::Encrypt,
                 )?;
@@ -455,7 +458,7 @@ pub fn decrypt(
     );
 
     let mut op = aes.begin_aead(
-        kek.into(),
+        kek,
         crypto::aes::GcmMode::GcmTag16 { nonce: ZERO_NONCE },
         crypto::SymmetricOperation::Decrypt,
     )?;

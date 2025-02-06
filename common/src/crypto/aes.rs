@@ -39,6 +39,17 @@ pub enum Variant {
     Aes256,
 }
 
+impl Variant {
+    /// Size in bytes of the corresponding AES key.
+    pub fn key_size(&self) -> usize {
+        match self {
+            Self::Aes128 => 16,
+            Self::Aes192 => 24,
+            Self::Aes256 => 32,
+        }
+    }
+}
+
 /// An AES-128, AES-192 or AES-256 key.
 #[derive(Clone, PartialEq, Eq, ZeroizeOnDrop)]
 pub enum Key {
