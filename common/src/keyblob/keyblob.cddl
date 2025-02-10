@@ -133,6 +133,7 @@ KeyParam = &(
     [1610613744, DateTime], ; Tag_CertificateNotBefore
     [1610613745, DateTime], ; Tag_CertificateNotAfter
     [805307378, int], ; Tag_MaxBootLevel
+    [-1879047468, bstr], ; Tag_ModuleHash
 )
 Tag = &(
     Tag_Invalid: 0,
@@ -201,6 +202,7 @@ Tag = &(
     Tag_CertificateNotBefore: 1610613744,
     Tag_CertificateNotAfter: 1610613745,
     Tag_MaxBootLevel: 805307378,
+    Tag_ModuleHash: -1879047468,
 )
 Algorithm = &(
     Algorithm_Rsa: 1,
