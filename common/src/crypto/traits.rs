@@ -456,6 +456,35 @@ pub trait Hkdf: Send {
         info: &[u8],
         out_len: usize,
     ) -> Result<Vec<u8>, Error>;
+
+    /// Perform combined HKDF using the input key material in `ikm`, emitting output in the form of
+    /// an AES key.
+    fn hkdf_aes(
+        &self,
+        salt: &[u8],
+        ikm: &[u8],
+        info: &[u8],
+        variant: aes::Variant,
+    ) -> Result<OpaqueOr<aes::Key>, Error> {
+        // Default implementation generates explicit key material and converts to an [`aes::Key`].
+        let data = self.hkdf(salt, ikm, info, variant.key_size())?;
+        let explicit_key = aes::Key::new(data)?;
+        Ok(explicit_key.into())
+    }
+
+    /// Perform the HKDF-Expand step using the pseudo-random key in `prk`, emitting output in the
+    /// form of an AES key.
+    fn expand_aes(
+        &self,
+        prk: &OpaqueOr<hmac::Key>,
+        info: &[u8],
+        variant: aes::Variant,
+    ) -> Result<OpaqueOr<aes::Key>, Error> {
+        // Default implementation generates explicit key material and converts to an [`aes::Key`].
+        let data = self.expand(prk, info, variant.key_size())?;
+        let explicit_key = aes::Key::new(data)?;
+        Ok(explicit_key.into())
+    }
 }
 
 /// Abstraction of CKDF key derivation with AES-CMAC KDF from NIST SP 800-108 in counter mode (see
